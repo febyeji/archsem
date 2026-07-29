@@ -2903,11 +2903,14 @@ Definition filter_tlbi_promises
     | None => true
     end) candidates.
 
-Definition VMPromising (bbm_param : BBM.param) : Promising.Model :=
+Definition VMPromising_with_dedup
+    (bbm_param : BBM.param) (deduplicate_final_states : bool) :
+    Promising.Model :=
   {|tState := TState.t;
     tState_init := λ tid, TState.init;
     tState_regs := TState.reg_map;
     tState_nopromises := (λ ts, is_emptyb (TState.prom_wr ts ++ TState.prom_tlbi ts));
+    deduplicate_final_states := deduplicate_final_states;
     iis := IIS.t;
     iis_init := IIS.init;
     address_space := PAS_NonSecure;
@@ -2920,6 +2923,9 @@ Definition VMPromising (bbm_param : BBM.param) : Promising.Model :=
     memory_snapshot := Memory.to_memMap;
   |}.
 
+Definition VMPromising (bbm_param : BBM.param) : Promising.Model :=
+  VMPromising_with_dedup bbm_param false.
+
 Definition VMPromising_nocert (bbm_param : BBM.param) :=
   Promising_to_Modelnc (*certified=*)false (VMPromising bbm_param).
 
@@ -2931,3 +2937,6 @@ Definition VMPromising_exe (bbm_param : BBM.param) :=
 
 Definition VMPromising_pf (bbm_param : BBM.param) :=
   Promising_to_Modelc_pf (VMPromising bbm_param).
+
+Definition VMPromising_pf_dedup (bbm_param : BBM.param) :=
+  Promising_to_Modelc_pf (VMPromising_with_dedup bbm_param true).

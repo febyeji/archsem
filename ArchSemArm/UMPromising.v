@@ -588,6 +588,7 @@ Definition UMPromising : Promising.Model :=
     tState_init := λ tid, TState.init;
     tState_regs := TState.reg_map;
     tState_nopromises := is_emptyb ∘ TState.prom;
+    deduplicate_final_states := false;
     iis := IIS.t;
     iis_init := IIS.init;
     address_space := PAS_NonSecure;

@@ -50,6 +50,57 @@ From ASCommon Require Import Common Exec FMon StateT.
 Require Import Interface.
 Require Import TermModels.
 
+Fixpoint dedup_by_seen {A K : Type} `{Countable K}
+    (key : A → K) (seen : gset K) (xs : list A) : list A :=
+  match xs with
+  | [] => []
+  | x :: xs =>
+    if decide (key x ∈ seen) then dedup_by_seen key seen xs
+    else x :: dedup_by_seen key ({[key x]} ∪ seen) xs
+  end.
+
+Definition dedup_by {A K : Type} `{Countable K}
+    (key : A → K) (xs : list A) : list A :=
+  dedup_by_seen key ∅ xs.
+
+Lemma elem_of_dedup_by_seen_key {A K : Type} `{Countable K}
+    (key : A → K) (xs : list A) (seen : gset K) (k : K) :
+  k ∈ map key (dedup_by_seen key seen xs) ↔
+  k ∈ map key xs ∧ k ∉ seen.
+Proof.
+  revert seen.
+  induction xs as [|x xs IH]; intros seen.
+  - cbn [dedup_by_seen]. set_solver.
+  - cbn [dedup_by_seen].
+    case_decide.
+    + rewrite IH. set_solver.
+    + cbn [map]. rewrite !elem_of_cons, IH.
+      split.
+      * intros [Hkey | [Hxs Hfresh]].
+        -- subst k. split; [left; reflexivity | exact H0].
+        -- split; [right; exact Hxs |].
+           intros Hseen. apply Hfresh.
+           apply elem_of_union. right. exact Hseen.
+      * intros [[Hkey | Hxs] Hfresh].
+        -- left. exact Hkey.
+        -- destruct (decide (k = key x)) as [Hkey | Hkey].
+           ++ left. exact Hkey.
+           ++ right. split; [exact Hxs |].
+              intros Hin.
+              apply elem_of_union in Hin as [Hin | Hin].
+              ** apply elem_of_singleton in Hin. contradiction.
+              ** contradiction.
+Qed.
+
+Lemma elem_of_dedup_by_key {A K : Type} `{Countable K}
+    (key : A → K) (xs : list A) (k : K) :
+  k ∈ map key (dedup_by key xs) ↔ k ∈ map key xs.
+Proof.
+  unfold dedup_by.
+  rewrite elem_of_dedup_by_seen_key.
+  set_solver.
+Qed.
+
 
 
 (** This module define the representation of a promising model memory as
@@ -175,6 +226,9 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
       (** Check if a thread state has no pending promises, which means that it
           can be explained with the current memory state *)
       tState_nopromises : tState → bool;
+      (** Whether executable promise-first enumeration should collapse terminal
+          thread states that have the same architectural and validation key. *)
+      deduplicate_final_states : bool;
       (** Intra instruction state, reset after each instruction *)
       iis : Type;
       iis_init : iis;
@@ -438,6 +492,53 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
               run_to_termination fuel base
         end.
 
+      #[local] Instance reg_sig_eq_dec : EqDecision (sigT reg_type) :=
+        sigT_dec reg_type.
+      #[local] Instance reg_sig_countable : Countable (sigT reg_type).
+      Proof. apply _. Defined.
+
+      Local Notation terminal_state_key :=
+        (list (reg * sigT reg_type) * (bool * list string))%type.
+
+      Definition terminal_state_key_of
+          (mem : PromMemory.t mEvent) (ts : tState) : terminal_state_key :=
+        (map_to_list (dmap_car (prom.(tState_regs) ts)),
+          (prom.(tState_nopromises) ts,
+           prom.(Promising.check_valid_end) tid initmem ts mem)).
+
+      Lemma terminal_state_key_sound (mem : PromMemory.t mEvent)
+          (ts1 ts2 : tState) :
+        terminal_state_key_of mem ts1 = terminal_state_key_of mem ts2 →
+        prom.(tState_regs) ts1 = prom.(tState_regs) ts2 ∧
+        prom.(tState_nopromises) ts1 = prom.(tState_nopromises) ts2 ∧
+        prom.(Promising.check_valid_end) tid initmem ts1 mem =
+          prom.(Promising.check_valid_end) tid initmem ts2 mem.
+      Proof.
+        intros Hkey.
+        unfold terminal_state_key_of in Hkey.
+        split.
+        - apply dmap_eq_car, map_to_list_inj.
+          assert (Hregs :
+            map_to_list (dmap_car (tState_regs prom ts1)) =
+            map_to_list (dmap_car (tState_regs prom ts2))) by congruence.
+          rewrite Hregs. reflexivity.
+        - split; congruence.
+      Qed.
+
+      Definition deduplicate_terminal_states
+          (mem : PromMemory.t mEvent) (states : list tState) : list tState :=
+        dedup_by (terminal_state_key_of mem) states.
+
+      Lemma deduplicate_terminal_states_key_spec
+          (mem : PromMemory.t mEvent) (states : list tState)
+          (key : terminal_state_key) :
+        key ∈ map (terminal_state_key_of mem)
+              (deduplicate_terminal_states mem states) ↔
+        key ∈ map (terminal_state_key_of mem) states.
+      Proof.
+        apply elem_of_dedup_by_key.
+      Qed.
+
       Record EnumerationResult :=
         {
           promises : list mEvent;
@@ -464,6 +565,10 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
           |> omap (λ '(new_proms, st),
                  if is_emptyb new_proms then Some (PPState.state st)
                  else None) in
+        let tstates :=
+          if prom.(deduplicate_final_states) then
+            deduplicate_terminal_states mem tstates
+          else tstates in
         let errors :=
           res |> Exec.errors |>
             omap (λ '((new_proms, _), err_msg),

@@ -69,8 +69,14 @@ module Arm = struct
 
   module BBM = VMPromising.BBM
 
-  let vmProm_model ?(bbm_param = BBM.Off) isem fuel term initState =
-    VMPromising.coq_VMPromising_pf bbm_param isem (Z.of_int fuel)
+  let vmProm_model ?(bbm_param = BBM.Off)
+      ?(deduplicate_final_states = false) isem fuel term initState =
+    let model =
+      if deduplicate_final_states
+      then VMPromising.coq_VMPromising_pf_dedup
+      else VMPromising.coq_VMPromising_pf
+    in
+    model bbm_param isem (Z.of_int fuel)
       (ArchState.num_thread initState |> Z.of_int)
       (termCond_to_coq term) initState
     |> Obj.magic
