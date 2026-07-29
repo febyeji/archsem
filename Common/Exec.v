@@ -308,14 +308,18 @@ Proof.
   done.
 Qed.
 
+Definition choose_list_cont {St E A R}
+    (l : list A) (k : A → t St E R) : t St E R :=
+  λ st, res_mbind_tail (λ x, k x st) (make l []).
+
 Fixpoint choose_cprodn_cont {St E A R n}
     (choices : vec (list A) n) :
     (vec A n → t St E R) → t St E R :=
   match choices with
   | [#] => λ k, k [#]
   | hd ::: tl => λ k,
-      x ← choosel hd;
-      choose_cprodn_cont tl (λ xs, k (x ::: xs))
+      choose_list_cont hd $ λ x,
+        choose_cprodn_cont tl (λ xs, k (x ::: xs))
   end.
 Extraction Implicit choose_cprodn_cont [St E A R n].
 

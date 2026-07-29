@@ -92,6 +92,17 @@ Proof.
   done.
 Qed.
 
+Lemma choose_list_cont_spec {A St E B} (l : list A)
+    (f : A → t St E B) :
+  choose_list_cont l f = (choosel l ≫= f).
+Proof.
+  apply functional_extensionality. intro st.
+  unfold choose_list_cont.
+  rewrite res_mbind_tail_eq_foldr.
+  rewrite choosel_bind_spec.
+  done.
+Qed.
+
 Lemma merge_all_map {E A B C}
     (f : B → res E C) (g : A → B) l :
   merge_all f (map g l) = merge_all (λ x, f (g x)) l.
@@ -177,6 +188,7 @@ Proof.
     rewrite !List.app_nil_r.
     done.
   - cbn [choose_cprodn_cont cprodn].
+    rewrite choose_list_cont_spec.
     assert
       (Hrec :
         (λ x,
