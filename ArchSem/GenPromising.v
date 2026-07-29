@@ -182,6 +182,32 @@ Module PPState.
   Arguments t : clear implicits.
 End PPState.
 
+Module FrontierState.
+  Section FS.
+    Context {tState mEvent : Type}.
+
+    Record t :=
+      Make {
+          new_promises : list mEvent;
+          state : tState;
+          mem : PromMemory.t mEvent;
+        }.
+
+    #[global] Instance eq_dec
+        `{EqDecision tState, EqDecision mEvent} : EqDecision t.
+    Proof. solve_decision. Defined.
+  End FS.
+  Arguments t : clear implicits.
+End FrontierState.
+
+Definition keep_frontier_states {tState mEvent}
+    (xs : list (FrontierState.t tState mEvent)) := xs.
+
+Lemma keep_frontier_states_spec {tState mEvent}
+    (x : FrontierState.t tState mEvent) xs :
+  x ∈ keep_frontier_states xs ↔ x ∈ xs.
+Proof. done. Qed.
+
 (* to be imported *)
 Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
     (TM : TermModelsT Arch Inter).
@@ -235,6 +261,16 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
       (** The type of memory event, any communication between threads must go here *)
       mEvent : Type;
       mEvent_eq_dec : EqDecision mEvent;
+      (** Whether promise-first enumeration should collapse exactly equal
+          instruction-boundary states before running the next instruction. *)
+      deduplicate_instruction_frontiers : bool;
+      (** Model-specific exact de-duplication for instruction-boundary states. *)
+      deduplicate_frontier_states :
+        list (FrontierState.t tState mEvent) →
+        list (FrontierState.t tState mEvent);
+      deduplicate_frontier_states_spec :
+        ∀ (x : FrontierState.t tState mEvent) xs,
+          x ∈ deduplicate_frontier_states xs ↔ x ∈ xs;
       (** Give the tid that initiated that event *)
       mEvent_tid : mEvent → nat;
       (** Filter executable promise candidates from a single enumeration run.
@@ -492,6 +528,95 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
               run_to_termination fuel base
         end.
 
+      Local Notation frontier_state := (FrontierState.t tState mEvent).
+      Local Notation exec_state :=
+        (list mEvent * PPState.t tState mEvent iis)%type.
+
+      Definition frontier_to_exec_state (fs : frontier_state) : exec_state :=
+        (fs.(FrontierState.new_promises),
+          PPState.Make fs.(FrontierState.state) fs.(FrontierState.mem)
+            prom.(iis_init)).
+
+      Definition exec_to_frontier_state (st : exec_state) : frontier_state :=
+        FrontierState.Make st.1 (PPState.state st.2) (PPState.mem st.2).
+
+      (** Execute one instruction from an instruction-boundary state.  The
+          intra-instruction state is deliberately discarded afterward: every
+          continuing branch starts the next instruction from [iis_init], and
+          final-state processing does not inspect [iis]. *)
+      Definition run_frontier_instruction (base : nat) (fs : frontier_state) :
+          Exec.res (frontier_state * string) (frontier_state * bool) :=
+        let handler := run_outcome_with_promise base in
+        let step : Exec.t exec_state string bool :=
+          cinterp handler isem;;
+          ts ← mget (PPState.state ∘ snd);
+          mret (term tid (prom.(tState_regs) ts))
+        in
+        let res := step (frontier_to_exec_state fs) in
+        Exec.make
+          (map (λ '(st, done), (exec_to_frontier_state st, done))
+            res.(Exec.results))
+          (map (λ '(st, err), (exec_to_frontier_state st, err))
+            res.(Exec.errors)).
+
+      Definition continuing_frontier
+          (results : list (frontier_state * bool)) : list frontier_state :=
+        omap (λ x : frontier_state * bool,
+          if x.2 then None else Some x.1) results.
+
+      Definition completed_frontier
+          (results : list (frontier_state * bool)) :
+          list (frontier_state * bool) :=
+        List.filter (λ x : frontier_state * bool, x.2) results.
+
+      (** Breadth-first instruction enumeration.  De-duplication is applied to
+          the complete continuing frontier, so equal states reached from
+          different parents are merged before the next instruction. *)
+      Fixpoint run_frontiers
+          (fuel base : nat) (frontier : list frontier_state)
+          (completed_acc : list (frontier_state * bool))
+          (errors_acc : list (frontier_state * string)) :
+          Exec.res (frontier_state * string) (frontier_state * bool) :=
+        match fuel with
+        | 0%nat =>
+            let out_of_fuel :=
+              map (λ fs,
+                (fs, term tid (prom.(tState_regs) fs.(FrontierState.state))))
+                frontier in
+            Exec.make
+              (List.rev completed_acc ++ out_of_fuel)
+              (List.rev errors_acc)
+        | S fuel =>
+            let stepped :=
+              Exec.res_mbind_tail (run_frontier_instruction base)
+                (Exec.make frontier []) in
+            let completed_acc :=
+              List.rev_append
+                (completed_frontier stepped.(Exec.results)) completed_acc in
+            let errors_acc :=
+              List.rev_append stepped.(Exec.errors) errors_acc in
+            let frontier := continuing_frontier stepped.(Exec.results) in
+            let frontier :=
+              prom.(deduplicate_frontier_states) frontier in
+            run_frontiers fuel base frontier completed_acc errors_acc
+        end.
+
+      Definition frontier_res_to_exec
+          (res : Exec.res (frontier_state * string)
+                          (frontier_state * bool)) :
+          Exec.res (exec_state * string) (exec_state * bool) :=
+        Exec.make
+          (map (λ '(fs, done), (frontier_to_exec_state fs, done))
+            res.(Exec.results))
+          (map (λ '(fs, err), (frontier_to_exec_state fs, err))
+            res.(Exec.errors)).
+
+      Definition run_to_termination_frontiers
+          (fuel base : nat) (st : exec_state) :
+          Exec.res (exec_state * string) (exec_state * bool) :=
+        frontier_res_to_exec
+          (run_frontiers fuel base [exec_to_frontier_state st] [] []).
+
       #[local] Instance reg_sig_eq_dec : EqDecision (sigT reg_type) :=
         sigT_dec reg_type.
       #[local] Instance reg_sig_countable : Countable (sigT reg_type).
@@ -551,8 +676,10 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
           (mem : PromMemory.t mEvent) : EnumerationResult :=
         let base := List.length mem in
         let res :=
-          run_to_termination fuel base
-            ([], PPState.Make ts mem prom.(iis_init))
+          let st := ([], PPState.Make ts mem prom.(iis_init)) in
+          if prom.(deduplicate_instruction_frontiers) then
+            run_to_termination_frontiers fuel base st
+          else run_to_termination fuel base st
         in
         let success_states := Exec.success_state_list res in
         let out_of_fuel := bool_decide (∃ r ∈ (Exec.results res).*2, ¬ (r : bool)) in

@@ -53,6 +53,105 @@ Require Import Effects.
 
 Module Exec.
 
+(** Runtime hash used only to choose an equality bucket.  The Rocq definition
+    deliberately puts everything in one bucket; extraction replaces it with
+    [Hashtbl.hash].  Since bucket membership is checked with [EqDecision], hash
+    collisions cannot change the result. *)
+Definition runtime_hash {A : Type} (_ : A) : positive := 1%positive.
+
+(** Equality buckets for exact de-duplication without requiring [Countable] on
+    the de-duplication key. *)
+Definition hash_buckets (K : Type) := gmap positive (list K).
+#[export] Typeclasses Transparent hash_buckets.
+
+Definition hash_bucket_contains {K : Type} `{EqDecision K}
+    (k : K) (seen : hash_buckets K) : Prop :=
+  k ∈ default [] (seen !! runtime_hash k).
+
+#[export] Instance hash_bucket_contains_dec {K : Type} `{EqDecision K}
+    (k : K) (seen : hash_buckets K) :
+    Decision (hash_bucket_contains k seen).
+Proof. unfold hash_bucket_contains. apply _. Defined.
+
+Definition hash_bucket_insert {K : Type}
+    (k : K) (seen : hash_buckets K) : hash_buckets K :=
+  <[runtime_hash k :=
+      k :: default [] (seen !! runtime_hash k)]> seen.
+
+Lemma hash_bucket_contains_insert {K : Type} `{EqDecision K}
+    (k x : K) (seen : hash_buckets K) :
+  hash_bucket_contains k (hash_bucket_insert x seen) ↔
+  k = x ∨ hash_bucket_contains k seen.
+Proof.
+  unfold hash_bucket_contains, hash_bucket_insert.
+  unfold hash_buckets in seen |- *.
+  destruct (decide (runtime_hash k = runtime_hash x)) as [Hhash | Hhash].
+  - rewrite Hhash, lookup_insert. cbn. rewrite elem_of_cons.
+    split.
+    + intros [-> | Hin]; [left; reflexivity | right; exact Hin].
+    + intros [-> | Hin]; [left; reflexivity | right; exact Hin].
+  - rewrite lookup_insert_ne; [|exact Hhash].
+    split.
+    + intros Hin. right. exact Hin.
+    + intros [Heq | Hin]; [subst x; contradiction | exact Hin].
+Qed.
+
+Fixpoint dedup_by_hash_seen {A K : Type} `{EqDecision K}
+    (key : A → K) (seen : hash_buckets K) (xs : list A) : list A :=
+  match xs with
+  | [] => []
+  | x :: xs =>
+      if decide (hash_bucket_contains (key x) seen) then
+        dedup_by_hash_seen key seen xs
+      else
+        x :: dedup_by_hash_seen key (hash_bucket_insert (key x) seen) xs
+  end.
+
+Definition dedup_by_hash {A K : Type} `{EqDecision K}
+    (key : A → K) (xs : list A) : list A :=
+  dedup_by_hash_seen key ∅ xs.
+
+Lemma elem_of_dedup_by_hash_seen_key {A K : Type} `{EqDecision K}
+    (key : A → K) (xs : list A) (seen : hash_buckets K) (k : K) :
+  k ∈ map key (dedup_by_hash_seen key seen xs) ↔
+  k ∈ map key xs ∧ ¬ hash_bucket_contains k seen.
+Proof.
+  revert seen.
+  induction xs as [|x xs IH]; intros seen.
+  - cbn [dedup_by_hash_seen]. set_solver.
+  - cbn [dedup_by_hash_seen].
+    case_decide as Hseen.
+    + rewrite IH. cbn [map]. rewrite elem_of_cons.
+      split.
+      * intros [Hin Hfresh]. split; [right; exact Hin | exact Hfresh].
+      * intros [[Hkey | Hin] Hfresh].
+        -- subst k. contradiction.
+        -- split; assumption.
+    + cbn [map]. rewrite !elem_of_cons, IH.
+      rewrite hash_bucket_contains_insert.
+      split.
+      * intros [Hkey | [Hin Hfresh]].
+        -- subst k. split; [left; reflexivity | exact Hseen].
+        -- split; [right; exact Hin |].
+           intros Hold. apply Hfresh. right. exact Hold.
+      * intros [[Hkey | Hin] Hfresh].
+        -- left. exact Hkey.
+        -- destruct (decide (k = key x)) as [Hkey | Hkey].
+           ++ left. exact Hkey.
+           ++ right. split; [exact Hin |].
+              intros [Heq | Hold]; contradiction.
+Qed.
+
+Lemma elem_of_dedup_by_hash_key {A K : Type} `{EqDecision K}
+    (key : A → K) (xs : list A) (k : K) :
+  k ∈ map key (dedup_by_hash key xs) ↔ k ∈ map key xs.
+Proof.
+  unfold dedup_by_hash.
+  rewrite elem_of_dedup_by_hash_seen_key.
+  unfold hash_bucket_contains, hash_buckets. rewrite lookup_empty. cbn.
+  set_solver.
+Qed.
+
 (** * Base execution result definitions *)
 Record res {E A : Type} := make {
     results: list A;

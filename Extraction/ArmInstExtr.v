@@ -55,4 +55,5 @@ Set Extraction Output Directory ".".
 #[warnings="-extraction-remaining-implicit,-extraction-reserved-identifier"]
 Separate Extraction
   Arm sail_tiny_arm_sem UMPromising_pf VMPromising_pf VMPromising_pf_dedup
+  VMPromising_pf_frontier_dedup VMPromising_pf_all_dedup
   X86Inst.X86 sail_tiny_x86_sem x86_operational_modelc.

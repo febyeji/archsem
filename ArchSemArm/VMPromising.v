@@ -401,6 +401,9 @@ Module WSReg.
         view : nat
       }.
 
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. intros [] []. decide_eq. Defined.
+
   Definition to_val_view_if (sr : reg) (wsreg : t) : option (reg_type sr * nat) :=
     if decide (wsreg.(sreg) = sr) is left eq
     then Some $ (ctrans eq wsreg.(val), wsreg.(view))
@@ -413,6 +416,9 @@ Module LEv.
   Inductive t :=
   | Cse (t : nat)
   | Wsreg (wsreg : WSReg.t).
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   Definition get_cse (lev : t) : option view :=
     match lev with
@@ -471,6 +477,43 @@ Module TState.
   #[global] Instance eta : Settable _ :=
     settable! make <prom_wr; prom_tlbi;regs;levs;coh;tcoh;vrd;vwr;vdmbst;vdmb;vdsb;
                     vspec;vcse;vtlbi_self;vtlbi_other;vmsr;vacq;vrel;fwdb;xclb>.
+
+  #[local] Instance reg_sig_eq_dec : EqDecision (sigT reg_type) :=
+    sigT_dec reg_type.
+
+  Definition reg_view_sig_pack
+      (x : sigT (λ reg, (reg_type reg * view)%type)) :
+      (sigT reg_type * view)%type :=
+    match x with
+    | existT reg (value, v) => (existT reg value, v)
+    end.
+
+  Definition reg_view_sig_unpack
+      (x : (sigT reg_type * view)%type) :
+      sigT (λ reg, (reg_type reg * view)%type) :=
+    match x with
+    | (existT reg value, v) => existT reg (value, v)
+    end.
+
+  Lemma reg_view_sig_unpack_pack x :
+    reg_view_sig_unpack (reg_view_sig_pack x) = x.
+  Proof. destruct x as [reg [value v]]. reflexivity. Qed.
+
+  #[local] Instance reg_view_sig_pack_inj :
+      Inj (=) (=) reg_view_sig_pack.
+  Proof.
+    intros x y Heq.
+    rewrite <-(reg_view_sig_unpack_pack x),
+      <-(reg_view_sig_unpack_pack y).
+    rewrite Heq. reflexivity.
+  Qed.
+
+  #[local] Instance reg_view_sig_eq_dec :
+      EqDecision (sigT (λ reg, (reg_type reg * view)%type)) :=
+    inj_eq_dec reg_view_sig_pack.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. intros [] []. decide_eq. Defined.
 
   (* TODO Check and remove mem as an argument here *)
   Definition init (mem : memoryMap) (iregs : registerMap) :=
@@ -2903,8 +2946,25 @@ Definition filter_tlbi_promises
     | None => true
     end) candidates.
 
+Definition deduplicate_vmp_frontier_states
+    (states : list (FrontierState.t TState.t Ev.t)) :
+    list (FrontierState.t TState.t Ev.t) :=
+  Exec.dedup_by_hash id states.
+
+Lemma deduplicate_vmp_frontier_states_spec
+    (x : FrontierState.t TState.t Ev.t) states :
+  x ∈ deduplicate_vmp_frontier_states states ↔ x ∈ states.
+Proof.
+  unfold deduplicate_vmp_frontier_states.
+  pose proof
+    (Exec.elem_of_dedup_by_hash_key id states x) as Hspec.
+  rewrite !List.map_id in Hspec.
+  exact Hspec.
+Qed.
+
 Definition VMPromising_with_dedup
-    (bbm_param : BBM.param) (deduplicate_final_states : bool) :
+    (bbm_param : BBM.param) (deduplicate_final_states : bool)
+    (deduplicate_instruction_frontiers : bool) :
     Promising.Model :=
   {|tState := TState.t;
     tState_init := λ tid, TState.init;
@@ -2915,6 +2975,9 @@ Definition VMPromising_with_dedup
     iis_init := IIS.init;
     address_space := PAS_NonSecure;
     mEvent := Ev.t;
+    deduplicate_instruction_frontiers := deduplicate_instruction_frontiers;
+    deduplicate_frontier_states := deduplicate_vmp_frontier_states;
+    deduplicate_frontier_states_spec := deduplicate_vmp_frontier_states_spec;
     mEvent_tid := Ev.tid;
     filter_promises := filter_tlbi_promises;
     handle_outcome := run_outcome;
@@ -2924,7 +2987,7 @@ Definition VMPromising_with_dedup
   |}.
 
 Definition VMPromising (bbm_param : BBM.param) : Promising.Model :=
-  VMPromising_with_dedup bbm_param false.
+  VMPromising_with_dedup bbm_param false false.
 
 Definition VMPromising_nocert (bbm_param : BBM.param) :=
   Promising_to_Modelnc (*certified=*)false (VMPromising bbm_param).
@@ -2939,4 +3002,10 @@ Definition VMPromising_pf (bbm_param : BBM.param) :=
   Promising_to_Modelc_pf (VMPromising bbm_param).
 
 Definition VMPromising_pf_dedup (bbm_param : BBM.param) :=
-  Promising_to_Modelc_pf (VMPromising_with_dedup bbm_param true).
+  Promising_to_Modelc_pf (VMPromising_with_dedup bbm_param true false).
+
+Definition VMPromising_pf_frontier_dedup (bbm_param : BBM.param) :=
+  Promising_to_Modelc_pf (VMPromising_with_dedup bbm_param false true).
+
+Definition VMPromising_pf_all_dedup (bbm_param : BBM.param) :=
+  Promising_to_Modelc_pf (VMPromising_with_dedup bbm_param true true).

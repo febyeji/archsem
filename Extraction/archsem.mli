@@ -62,6 +62,7 @@ module Arm : sig
   val vmProm_model :
     ?bbm_param:BBM.param ->
     ?deduplicate_final_states:bool ->
+    ?deduplicate_instruction_frontiers:bool ->
     empty ArchModel.t
 end
 

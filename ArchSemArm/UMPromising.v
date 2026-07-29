@@ -168,6 +168,9 @@ Module FwdItem.
         xcl : bool
       }.
 
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
+
   Definition init := make 0 0 false.
 
   (** The view of a read from a forwarded write *)
@@ -593,6 +596,9 @@ Definition UMPromising : Promising.Model :=
     iis_init := IIS.init;
     address_space := PAS_NonSecure;
     mEvent := Msg.t;
+    deduplicate_instruction_frontiers := false;
+    deduplicate_frontier_states := keep_frontier_states;
+    deduplicate_frontier_states_spec := keep_frontier_states_spec;
     mEvent_tid := Msg.tid;
     filter_promises := λ _ _ _ promises, promises;
     handle_outcome := λ _ tid initmem, run_outcome tid initmem;

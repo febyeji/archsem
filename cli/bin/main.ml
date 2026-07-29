@@ -282,17 +282,29 @@ let cmd_vmp =
     in
     Arg.(value & flag & info ["deduplicate-final-states"] ~doc)
   in
+  let deduplicate_instruction_frontiers =
+    let doc =
+      "Collapse exactly equal promise-first states at every instruction \
+       boundary before executing the next instruction. Hash collisions are \
+       checked with structural equality. This preserves reachable outcomes \
+       but not witness multiplicities."
+    in
+    Arg.(value & flag & info ["deduplicate-instruction-frontiers"] ~doc)
+  in
   let run =
     let+ files = path_and_conf_term
     and+ bbm_param = bbm_mode
     and+ deduplicate_final_states = deduplicate_final_states
+    and+ deduplicate_instruction_frontiers =
+      deduplicate_instruction_frontiers
     and+ fmt = format_term
     and+ () = asm_dump in
     let parse = parse_testfile fmt in
     assert (Config.get_arch () = Arch_id.Arm);
     run_tests "vmp"
       (ArmRunner.run_test_file ~parse
-         (vmProm_model ~bbm_param ~deduplicate_final_states tiny_isa))
+         (vmProm_model ~bbm_param ~deduplicate_final_states
+            ~deduplicate_instruction_frontiers tiny_isa))
       files
   in
   let info =
