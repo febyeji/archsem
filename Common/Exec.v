@@ -77,13 +77,99 @@ Definition merge {E A} (er1 er2 : res E A) :=
 #[export] Typeclasses Opaque merge.
 Arguments merge : simpl never.
 
+(** Tail-recursive accumulation for execution-result bind.  The accumulators
+    store the reverse of the results and errors seen so far. *)
+Fixpoint res_mbind_acc {E A B}
+    (f : A → res E B) (l : list A)
+    (results_acc : list B) (errors_acc : list E) : list B * list E :=
+  match l with
+  | [] => (results_acc, errors_acc)
+  | x :: l =>
+      let r := f x in
+      res_mbind_acc f l
+        (List.rev_append r.(results) results_acc)
+        (List.rev_append r.(errors) errors_acc)
+  end.
+
+Definition res_mbind_tail {E A B}
+    (f : A → res E B) (e : res E A) : res E B :=
+  let '(results_acc, errors_acc) :=
+    res_mbind_acc f e.(results) [] [] in
+  make
+    (List.rev_append results_acc [])
+    (List.rev_append errors_acc e.(errors)).
+
+Lemma res_mbind_acc_spec {E A B}
+    (f : A → res E B) (l : list A)
+    (results_acc : list B) (errors_acc : list E) :
+  let '(results_acc', errors_acc') :=
+    res_mbind_acc f l results_acc errors_acc in
+  List.rev results_acc' =
+    List.rev results_acc ++
+      List.concat (map (λ x, (f x).(results)) l) ∧
+  List.rev errors_acc' =
+    List.rev errors_acc ++
+      List.concat (map (λ x, (f x).(errors)) l).
+Proof.
+  induction l as [|x l IH] in results_acc, errors_acc |- *.
+  - cbn. split; rewrite app_nil_r; done.
+  - cbn [res_mbind_acc].
+    specialize
+      (IH (List.rev_append (f x).(results) results_acc)
+          (List.rev_append (f x).(errors) errors_acc)).
+    destruct
+      (res_mbind_acc f l
+        (List.rev_append (f x).(results) results_acc)
+        (List.rev_append (f x).(errors) errors_acc))
+      as [results_acc' errors_acc'] eqn:Hacc.
+    cbn in IH |- *.
+    rewrite !List.rev_append_rev in IH.
+    rewrite !List.rev_app_distr in IH.
+    rewrite !List.rev_involutive in IH.
+    destruct IH as [IHresults IHerrors].
+    split.
+    + rewrite IHresults. rewrite app_assoc. done.
+    + rewrite IHerrors. rewrite app_assoc. done.
+Qed.
+
+Lemma foldr_merge_map {E A B}
+    (f : A → res E B) (l : list A) (upstream_errors : list E) :
+  foldr merge (make [] upstream_errors) (map f l) =
+  make
+    (List.concat (map (λ x, (f x).(results)) l))
+    (List.concat (map (λ x, (f x).(errors)) l) ++ upstream_errors).
+Proof.
+  induction l as [|x l IH].
+  - done.
+  - cbn.
+    rewrite IH. unfold merge. cbn.
+    rewrite app_assoc. done.
+Qed.
+
+Lemma res_mbind_tail_eq_foldr {E A B}
+    (f : A → res E B) (e : res E A) :
+  res_mbind_tail f e =
+    foldr merge (make [] e.(errors)) (map f e.(results)).
+Proof.
+  destruct e as [l upstream_errors].
+  unfold res_mbind_tail.
+  pose proof (res_mbind_acc_spec f l [] []) as Hacc.
+  destruct (res_mbind_acc f l [] []) as [results_acc errors_acc] eqn:Hrun.
+  rewrite Hrun. cbn.
+  cbn in Hacc.
+  destruct Hacc as [Hresults Herrors].
+  rewrite !List.rev_append_rev. cbn.
+  rewrite Hresults. rewrite Herrors.
+  rewrite app_nil_r.
+  symmetry. apply foldr_merge_map.
+Qed.
+
 (** Monadic definitions for executions results *)
 
 #[export] Instance res_mret_inst {E} : MRet (res E) := λ _ v, make [v] [].
 
 #[export] Instance res_mbind_inst {E} : MBind (res E) :=
-  λ _ _ f e,
-    foldr merge (make [] e.(errors)) (map f e.(results)).
+  λ _ _ f e, res_mbind_tail f e.
 #[export] Typeclasses Opaque res_mbind_inst.
 
 #[export] Instance res_fmap_inst {E} : FMap (res E) :=
@@ -95,6 +181,29 @@ Arguments merge : simpl never.
 
 #[export] Instance res_choose_inst {E} : MChoose (res E) :=
   λ '(ChooseFin n), make (enum (fin n)) [].
+
+Lemma vlookup_fin_enum {A n} (v : vec A n) :
+  map (λ i, v !!! i) (enum (fin n)) = vec_to_list v.
+Proof.
+  induction v.
+  - done.
+  - cbn.
+    f_equal.
+    rewrite List.map_map. cbn.
+    exact IHv.
+Qed.
+
+Definition res_choosel {E A} (l : list A) : res E A := make l [].
+
+Lemma res_choosel_eq_mchoosel {E A} (l : list A) :
+  res_choosel (E:=E) l = (mchoosel l : res E A).
+Proof.
+  unfold res_choosel, mchoosel, mchoose.
+  cbn.
+  f_equal.
+  symmetry. rewrite vlookup_fin_enum.
+  apply vec_to_list_to_vec.
+Qed.
 
 #[export] Instance result_lift_res {E} : MLift (result E) (res E) := λ A, unpack_result.
 
@@ -139,6 +248,76 @@ Arguments t : clear implicits.
 
 #[export] Instance choose_inst {St E} : MChoose (t St E) :=
   λ '(ChooseFin n) st, make ((st,.) <$> enum (fin n)) [].
+
+Fixpoint rev_map_acc {A B} (f : A → B) (l : list A) (acc : list B) :=
+  match l with
+  | [] => acc
+  | x :: l => rev_map_acc f l (f x :: acc)
+  end.
+
+Definition map_tail {A B} (f : A → B) (l : list A) :=
+  List.rev (rev_map_acc f l []).
+
+Lemma rev_map_acc_spec {A B} (f : A → B) l acc :
+  rev_map_acc f l acc = List.rev (map f l) ++ acc.
+Proof.
+  induction l as [|x l IH] in acc |- *.
+  - done.
+  - cbn [rev_map_acc].
+    rewrite IH. cbn.
+    change
+      (List.rev (map f l) ++ ([f x] ++ acc) =
+       (List.rev (map f l) ++ [f x]) ++ acc).
+    rewrite app_assoc.
+    done.
+Qed.
+
+Lemma map_tail_eq_map {A B} (f : A → B) l :
+  map_tail f l = map f l.
+Proof.
+  unfold map_tail.
+  rewrite rev_map_acc_spec, app_nil_r.
+  apply List.rev_involutive.
+Qed.
+
+Definition choosel {St E A} (l : list A) : t St E A :=
+  λ st, make (map_tail (pair st) l) [].
+
+Lemma choosel_eq_mchoosel {St E A} (l : list A) :
+  choosel (St:=St) (E:=E) l = (mchoosel l : t St E A).
+Proof.
+  apply functional_extensionality. intro st.
+  unfold choosel, mchoosel, mchoose, fmap, fmap_inst.
+  rewrite map_tail_eq_map.
+  cbn.
+  f_equal.
+  assert
+    (Hmap :
+      map (λ '(st', a), (st', list_to_vec l !!! a))
+        (pair st <$> enum (fin (length l))) =
+      map (pair st)
+        (map (λ i, list_to_vec l !!! i) (enum (fin (length l))))).
+  {
+    remember (enum (fin (length l))) as indices.
+    clear Heqindices.
+    induction indices as [|i indices_tail IH].
+    - done.
+    - cbn. f_equal. exact IH.
+  }
+  rewrite Hmap, vlookup_fin_enum, vec_to_list_to_vec.
+  done.
+Qed.
+
+Fixpoint choose_cprodn_cont {St E A R n}
+    (choices : vec (list A) n) :
+    (vec A n → t St E R) → t St E R :=
+  match choices with
+  | [#] => λ k, k [#]
+  | hd ::: tl => λ k,
+      x ← choosel hd;
+      choose_cprodn_cont tl (λ xs, k (x ::: xs))
+  end.
+Extraction Implicit choose_cprodn_cont [St E A R n].
 
 #[export] Instance st_call_MState {St E} : MCall (MState St) (t St E) | 10 :=
   λ eff,
@@ -277,6 +456,8 @@ Proof. tcclean. unfold merge. destruct e. destruct e'. set_solver. Qed.
 Proof.
   tcclean. deintro. intros _.
   unfold mbind, mbind_inst.
+  unfold mbind, res_mbind_inst.
+  rewrite res_mbind_tail_eq_foldr.
   destruct (e st) as [l es].
   elim l; cdestruct |- ***; set_solver.
 Qed.
@@ -323,6 +504,7 @@ Qed.
 Proof.
   tcclean. deintro. intros _.
   unfold mbind, res_mbind_inst.
+  rewrite res_mbind_tail_eq_foldr.
   destruct e as [l es].
   elim l; cdestruct |- ***; set_solver.
 Qed.
@@ -371,6 +553,8 @@ Proof.
   clear H1.
   clear H0.
   unfold mbind, mbind_inst.
+  unfold mbind, res_mbind_inst.
+  rewrite res_mbind_tail_eq_foldr.
   destruct (e st) as [l es]; cbn.
   setoid_rewrite unfold_elem_of.
   induction l as [|[]].

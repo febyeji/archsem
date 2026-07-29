@@ -536,14 +536,15 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
           mSet (promise_tid prom tid next_ev);;
           run_promise_first fuel
         | 1 =>
-          (* Compute cartesian products of the possible thread states *)
-          tstates ← mchoosel $ cprodn (vmap final_states execution_results);
-          (* Lift them into full promising state *)
-          let st := Make tstates st.(initmem) st.(events) in
-          (* Discard the non-terminated ones *)
-          term_proof ← guard_discard $ terminated prom term st;
-          validate_final st;;
-          mret (make_final st term_proof)
+          (* Stream cartesian products instead of materializing them first. *)
+          Exec.choose_cprodn_cont
+            (vmap final_states execution_results) $ λ tstates,
+            (* Lift them into full promising state *)
+            let st := Make tstates st.(initmem) st.(events) in
+            (* Discard the non-terminated ones *)
+            term_proof ← guard_discard $ terminated prom term st;
+            validate_final st;;
+            mret (make_final st term_proof)
         | 2 =>
           let errs := List.concat (vmap errors execution_results) in
           err ← mchoosel errs;

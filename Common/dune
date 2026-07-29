@@ -24,6 +24,7 @@
   Effects
   FMon
   Exec
+  ExecOptimizations
   HVec)
  (theories Stdlib stdpp Hammer RecordUpdate Equations Ltac2)
  (coqdoc_flags
