@@ -273,6 +273,16 @@ Definition res_mbind_tail {E A B}
     (List.rev_append results_acc [])
     (List.rev_append errors_acc e.(errors)).
 
+(** Runtime-selectable parallel map.  Its logical definition is ordinary
+    [map]; extraction may use parallel workers while preserving list order. *)
+Definition runtime_parallel_map {A B}
+    (f : A → B) (l : list A) : list B :=
+  map f l.
+
+Lemma runtime_parallel_map_eq {A B} (f : A → B) (l : list A) :
+  runtime_parallel_map f l = map f l.
+Proof. done. Qed.
+
 Lemma res_mbind_acc_spec {E A B}
     (f : A → res E B) (l : list A)
     (results_acc : list B) (errors_acc : list E) :
@@ -336,6 +346,27 @@ Proof.
   rewrite Hresults. rewrite Herrors.
   rewrite app_nil_r.
   symmetry. apply foldr_merge_map.
+Qed.
+
+(** Bind independent inputs through a runtime-selectable parallel map, then
+    flatten their successes and errors in the same order as [res_mbind_tail]. *)
+Definition res_mbind_parallel {E A B}
+    (f : A → res E B) (e : res E A) : res E B :=
+  let mapped := runtime_parallel_map f e.(results) in
+  make
+    (List.concat (map (λ r, r.(results)) mapped))
+    (List.concat (map (λ r, r.(errors)) mapped) ++ e.(errors)).
+
+Lemma res_mbind_parallel_eq_tail {E A B}
+    (f : A → res E B) (e : res E A) :
+  res_mbind_parallel f e = res_mbind_tail f e.
+Proof.
+  unfold res_mbind_parallel.
+  rewrite runtime_parallel_map_eq.
+  rewrite res_mbind_tail_eq_foldr.
+  rewrite foldr_merge_map.
+  rewrite !List.map_map.
+  done.
 Qed.
 
 (** Monadic definitions for executions results *)

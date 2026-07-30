@@ -588,7 +588,7 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
               (List.rev errors_acc)
         | S fuel =>
             let stepped :=
-              Exec.res_mbind_tail (run_frontier_instruction base)
+              Exec.res_mbind_parallel (run_frontier_instruction base)
                 (Exec.make frontier []) in
             let completed_acc :=
               List.rev_append

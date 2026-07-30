@@ -58,6 +58,19 @@ Extraction Inline decide.
 Extraction Inline decide_rel.
 Extract Inlined Constant Exec.runtime_hash =>
   "(fun x -> ZO.succ (ZO.of_int (Hashtbl.hash x)))".
+Extract Inlined Constant Exec.runtime_parallel_map =>
+  "(fun f xs ->
+     let jobs =
+       match Sys.getenv_opt ""ARCHSEM_JOBS"" with
+       | Some value ->
+           (try max 1 (int_of_string value) with _ -> 1)
+       | None -> 1
+     in
+     let length = Stdlib.List.length xs in
+     if jobs <= 1 || length < 64 then
+       Stdlib.List.map f xs
+     else
+       Parmap.parmap ~ncores:(min jobs length) f (Parmap.L xs))".
 Extract Inlined Constant Exec.runtime_cache_by_hash =>
   "(fun eqb ->
      let table = Hashtbl.create 32 in

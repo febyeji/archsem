@@ -130,4 +130,4 @@
  (name archsem)
  (package archsem)
  (modules_without_implementation arch)
- (libraries zarith))
+ (libraries zarith parmap))
