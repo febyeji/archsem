@@ -1811,37 +1811,181 @@ Module TLB.
     | Some _, None => true
     end.
 
+  Definition invalid_entry :=
+    (bv 64 * list (bv 64) * nat * option nat)%type.
+  #[export] Typeclasses Transparent invalid_entry.
+
+  Definition invalid_entry_key := (bv 64 * list (bv 64))%type.
+
+  Definition invalid_entry_key_of (entry : invalid_entry) :
+      invalid_entry_key :=
+    let '(val_ttbr, path, _, _) := entry in (val_ttbr, path).
+
+  Definition invalid_entry_dominates
+      (val_ttbr : bv 64) (path : list (bv 64)) (ti_new : option nat)
+      (entry : invalid_entry) : Prop :=
+    let '(vt, p, _, ti) := entry in
+    val_ttbr = vt ∧ path = p ∧ invalidation_time_lt ti ti_new = false.
+
   Definition is_new_entry (val_ttbr : bv 64) (path : list (bv 64))
-      (ti_new : option nat)
-      (entries : list (bv 64 * list (bv 64) * nat * option nat)) : Prop :=
+      (ti_new : option nat) (entries : list invalid_entry) : Prop :=
     ¬ ∃ entry ∈ entries,
-      let '(vt, p, _, ti) := entry in
-      val_ttbr = vt ∧ path = p ∧ invalidation_time_lt ti ti_new = false.
+      invalid_entry_dominates val_ttbr path ti_new entry.
 
   Instance Decision_is_new_entry val_ttbr path ti_new entries :
       Decision (is_new_entry val_ttbr path ti_new entries).
-  Proof. unfold is_new_entry. apply _. Defined.
+  Proof. unfold is_new_entry, invalid_entry_dominates. apply _. Defined.
+
+  Definition invalid_entry_buckets :=
+    gmap positive (list invalid_entry).
+  #[export] Typeclasses Transparent invalid_entry_buckets.
+
+  Definition invalid_entry_bucket
+      (key : invalid_entry_key) (buckets : invalid_entry_buckets) :
+      list invalid_entry :=
+    default [] (buckets !! Exec.runtime_hash key).
+
+  Definition invalid_entry_bucket_insert
+      (entry : invalid_entry) (buckets : invalid_entry_buckets) :
+      invalid_entry_buckets :=
+    let key := invalid_entry_key_of entry in
+    <[Exec.runtime_hash key :=
+        entry :: invalid_entry_bucket key buckets]> buckets.
+
+  Fixpoint invalid_entry_bucket_insert_list
+      (entries : list invalid_entry) (buckets : invalid_entry_buckets) :
+      invalid_entry_buckets :=
+    match entries with
+    | [] => buckets
+    | entry :: entries =>
+        invalid_entry_bucket_insert entry
+          (invalid_entry_bucket_insert_list entries buckets)
+    end.
+
+  Definition invalid_entry_buckets_valid
+      (entries : list invalid_entry) (buckets : invalid_entry_buckets) : Prop :=
+    ∀ entry,
+      entry ∈ entries ↔
+      entry ∈ invalid_entry_bucket (invalid_entry_key_of entry) buckets.
+
+  Lemma invalid_entry_buckets_valid_empty :
+    invalid_entry_buckets_valid [] ∅.
+  Proof.
+    intros entry.
+    unfold invalid_entry_bucket.
+    rewrite lookup_empty. cbn. reflexivity.
+  Qed.
+
+  Lemma invalid_entry_buckets_valid_cons entry entries buckets :
+    invalid_entry_buckets_valid entries buckets →
+    invalid_entry_buckets_valid
+      (entry :: entries) (invalid_entry_bucket_insert entry buckets).
+  Proof.
+    intros Hvalid x.
+    specialize (Hvalid x).
+    unfold invalid_entry_bucket_insert, invalid_entry_bucket.
+    destruct (decide
+      (Exec.runtime_hash (invalid_entry_key_of x) =
+       Exec.runtime_hash (invalid_entry_key_of entry))) as [Hhash | Hhash].
+    - rewrite Hhash, lookup_insert. cbn.
+      rewrite !elem_of_cons.
+      unfold invalid_entry_bucket in Hvalid.
+      rewrite Hhash in Hvalid.
+      rewrite Hvalid.
+      reflexivity.
+    - rewrite lookup_insert_ne; [|exact Hhash].
+      rewrite !elem_of_cons.
+      unfold invalid_entry_bucket in Hvalid.
+      rewrite Hvalid.
+      assert (x ≠ entry) as Hne.
+      { intros ->. apply Hhash. reflexivity. }
+      tauto.
+  Qed.
+
+  Lemma invalid_entry_buckets_valid_insert_list
+      new entries buckets :
+    invalid_entry_buckets_valid entries buckets →
+    invalid_entry_buckets_valid
+      (new ++ entries) (invalid_entry_bucket_insert_list new buckets).
+  Proof.
+    induction new as [|entry new IH]; intros Hvalid; cbn.
+    - exact Hvalid.
+    - apply invalid_entry_buckets_valid_cons, IH, Hvalid.
+  Qed.
+
+  Definition is_new_entry_in_buckets
+      (val_ttbr : bv 64) (path : list (bv 64)) (ti_new : option nat)
+      (buckets : invalid_entry_buckets) : Prop :=
+    ¬ ∃ entry ∈ invalid_entry_bucket (val_ttbr, path) buckets,
+      invalid_entry_dominates val_ttbr path ti_new entry.
+
+  Instance Decision_is_new_entry_in_buckets val_ttbr path ti_new buckets :
+      Decision (is_new_entry_in_buckets val_ttbr path ti_new buckets).
+  Proof.
+    unfold is_new_entry_in_buckets, invalid_entry_dominates. apply _.
+  Defined.
+
+  Lemma invalid_entry_dominates_key val_ttbr path ti_new entry :
+    invalid_entry_dominates val_ttbr path ti_new entry →
+    invalid_entry_key_of entry = (val_ttbr, path).
+  Proof.
+    destruct entry as [[[vt p] time] ti]. cbn.
+    intros [-> [-> _]]. reflexivity.
+  Qed.
+
+  Lemma is_new_entry_in_buckets_iff val_ttbr path ti_new entries buckets :
+    invalid_entry_buckets_valid entries buckets →
+    is_new_entry_in_buckets val_ttbr path ti_new buckets ↔
+    is_new_entry val_ttbr path ti_new entries.
+  Proof.
+    intros Hvalid.
+    unfold is_new_entry_in_buckets, is_new_entry.
+    apply not_iff_compat.
+    split.
+    - intros [entry [Hin Hdominates]].
+      exists entry. split; [|exact Hdominates].
+      apply Hvalid.
+      pose proof
+        (invalid_entry_dominates_key
+          val_ttbr path ti_new entry Hdominates) as Hkey.
+      rewrite Hkey. exact Hin.
+    - intros [entry [Hin Hdominates]].
+      exists entry. split; [|exact Hdominates].
+      pose proof
+        (invalid_entry_dominates_key
+          val_ttbr path ti_new entry Hdominates) as Hkey.
+      rewrite <-Hkey.
+      apply Hvalid. exact Hin.
+  Qed.
+
+  Definition invalid_entries_acc :=
+    (list invalid_entry * invalid_entry_buckets)%type.
+  #[export] Typeclasses Transparent invalid_entries_acc.
 
   Definition add_invalid_entries_from_snapshot
                 (tlb : t) (trans_time : nat)
                 (ts : TState.t) (init : memoryMap) (mem : Memory.t)
                 (tid : nat) (is_ets2 : bool)
                 (va : bv 64) (asid : bv 16) (ttbr : reg)
-                (entries : list (bv 64 * list (bv 64) * nat * option nat)) :
-              result string (list (bv 64 * list (bv 64) * nat * option nat)) :=
+                (acc : invalid_entries_acc) :
+              result string invalid_entries_acc :=
+    let '(entries, buckets) := acc in
     if decide (is_ets2 ∧ trans_time < ts.(TState.vwr) ⊔ ts.(TState.vrd)) then
-      mret entries
+      mret acc
     else
       candidates ←
         TLB.get_invalid_ptes_with_inv_time
           ts init mem tid tlb trans_time va asid ttbr;
       let new :=
         omap (λ '(val_ttbr, path, ti_opt),
-          if decide (is_new_entry val_ttbr path ti_opt entries) then
+          if decide
+            (is_new_entry_in_buckets val_ttbr path ti_opt buckets) then
             Some (val_ttbr, path, trans_time, ti_opt)
           else None
         ) candidates in
-      mret (new ++ entries).
+      mret
+        (new ++ entries,
+         invalid_entry_bucket_insert_list new buckets).
 
   (** Sample every timestamp in one sparse TLB snapshot range without first
       materialising a pointwise snapshot list. *)
@@ -1850,42 +1994,54 @@ Module TLB.
                 (ts : TState.t) (init : memoryMap) (mem : Memory.t)
                 (tid : nat) (is_ets2 : bool)
                 (va : bv 64) (asid : bv 16) (ttbr : reg)
-                (entries : list (bv 64 * list (bv 64) * nat * option nat)) :
-              result string (list (bv 64 * list (bv 64) * nat * option nat)) :=
+                (acc : invalid_entries_acc) :
+              result string invalid_entries_acc :=
     match count with
-    | O => mret entries
+    | O => mret acc
     | S count =>
-      entries ←
+      acc ←
         add_invalid_entries_from_snapshot tlb (start_time + count)
-          ts init mem tid is_ets2 va asid ttbr entries;
+          ts init mem tid is_ets2 va asid ttbr acc;
       get_invalid_entries_from_range tlb start_time count
-        ts init mem tid is_ets2 va asid ttbr entries
+        ts init mem tid is_ets2 va asid ttbr acc
     end.
 
   (** Invalid translations depend on the page-table memory value at the time
       of the walk, not only on TLB contents.  Traverse the timestamp range of
       each sparse snapshot directly so PTE writes inside an unchanged TLB
       range remain available as fault candidates. *)
-  Fixpoint get_invalid_entries_from_snapshot_ranges
+  Fixpoint get_invalid_entries_from_snapshot_ranges_acc
                 (start_time end_time : nat) (snapshots : list (t * nat))
                 (ts : TState.t) (init : memoryMap) (mem : Memory.t)
                 (tid : nat) (is_ets2 : bool)
                 (va : bv 64) (asid : bv 16) (ttbr : reg) :
-              result string (list (bv 64 * list (bv 64) * nat * option nat)) :=
+              result string invalid_entries_acc :=
     match snapshots with
-    | [] => mret []
+    | [] => mret ([], ∅)
     | (tlb, snapshot_time) :: snapshots =>
-      entries ←
-        get_invalid_entries_from_snapshot_ranges
+      acc ←
+        get_invalid_entries_from_snapshot_ranges_acc
           start_time (snapshot_time - 1) snapshots
           ts init mem tid is_ets2 va asid ttbr;
       let range_start := start_time ⊔ snapshot_time in
       if range_start <=? end_time then
         get_invalid_entries_from_range
           tlb range_start (S (end_time - range_start))
-          ts init mem tid is_ets2 va asid ttbr entries
-      else mret entries
+          ts init mem tid is_ets2 va asid ttbr acc
+      else mret acc
     end.
+
+  Definition get_invalid_entries_from_snapshot_ranges
+                (start_time end_time : nat) (snapshots : list (t * nat))
+                (ts : TState.t) (init : memoryMap) (mem : Memory.t)
+                (tid : nat) (is_ets2 : bool)
+                (va : bv 64) (asid : bv 16) (ttbr : reg) :
+              result string (list invalid_entry) :=
+    acc ←
+      get_invalid_entries_from_snapshot_ranges_acc
+        start_time end_time snapshots
+        ts init mem tid is_ets2 va asid ttbr;
+    mret acc.1.
 End TLB.
 Export (hints) TLB.
 
