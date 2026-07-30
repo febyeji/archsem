@@ -69,6 +69,17 @@ Lemma runtime_cache_by_hash_eq {A B : Type}
   runtime_cache_by_hash eqb key thunk = thunk tt.
 Proof. reflexivity. Qed.
 
+(** Runtime-only observation boundary. Rocq and normal extracted execution
+    return [xs] unchanged; an opt-in extraction implementation may report how
+    many distinct [key] values occur. *)
+Definition runtime_observe_by_key {A K : Type}
+    (_ : K → K → bool) (_ : A → K) (xs : list A) : list A := xs.
+
+Lemma runtime_observe_by_key_eq {A K : Type}
+    (eqb : K → K → bool) (key : A → K) (xs : list A) :
+  runtime_observe_by_key eqb key xs = xs.
+Proof. reflexivity. Qed.
+
 (** Equality buckets for exact de-duplication without requiring [Countable] on
     the de-duplication key. *)
 Definition hash_buckets (K : Type) := gmap positive (list K).

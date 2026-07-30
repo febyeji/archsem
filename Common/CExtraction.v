@@ -120,6 +120,52 @@ Extract Inlined Constant Exec.runtime_cache_by_hash =>
                let y = thunk () in
                insert hash x y;
                y)".
+Extract Inlined Constant Exec.runtime_observe_by_key =>
+  "(fun eqb ->
+     let enabled =
+       match Sys.getenv_opt ""ARCHSEM_FRONTIER_STATS"" with
+       | Some ""1"" -> true
+       | _ -> false
+     in
+     let calls = ref 0 in
+     let states = ref 0 in
+     let projected = ref 0 in
+     let max_states = ref 0 in
+     let max_saved = ref 0 in
+     let report () =
+       Printf.eprintf
+         ""ArchSem frontier: calls=%d states=%d projected=%d saved=%d max_states=%d max_saved=%d\n%!""
+         !calls !states !projected (!states - !projected)
+         !max_states !max_saved
+     in
+     let () = at_exit (fun () -> if enabled then report ()) in
+     fun key xs ->
+       if not enabled then xs
+       else begin
+         let table = Hashtbl.create 128 in
+         let distinct = ref 0 in
+         Stdlib.List.iter (fun x ->
+           let k = key x in
+           let hash = Hashtbl.hash k in
+           let bucket =
+             match Hashtbl.find_opt table hash with
+             | None -> []
+             | Some bucket -> bucket
+           in
+           if not (Stdlib.List.exists (fun k' -> eqb k k') bucket) then begin
+             Hashtbl.replace table hash (k :: bucket);
+             incr distinct
+           end
+         ) xs;
+         let len = Stdlib.List.length xs in
+         incr calls;
+         states := !states + len;
+         projected := !projected + !distinct;
+         max_states := max !max_states len;
+         max_saved := max !max_saved (len - !distinct);
+         if !calls mod 100 = 0 then report ();
+         xs
+       end)".
 
 (** * Integers
 

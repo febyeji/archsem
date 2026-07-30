@@ -3226,16 +3226,35 @@ Definition filter_tlbi_promises
     | None => true
     end) candidates.
 
+Local Notation frontier_coalesce_key :=
+  (bool * (TState.t * Memory.t))%type.
+
+Definition frontier_coalesce_key_of
+    (state : FrontierState.t TState.t Ev.t) : frontier_coalesce_key :=
+  (is_emptyb state.(FrontierState.new_promises),
+    (state.(FrontierState.state), state.(FrontierState.mem))).
+
+Definition frontier_coalesce_key_eqb
+    (x y : frontier_coalesce_key) : bool :=
+  bool_decide (x = y).
+
+Definition observe_vmp_frontier_states :
+    list (FrontierState.t TState.t Ev.t) →
+    list (FrontierState.t TState.t Ev.t) :=
+  Exec.runtime_observe_by_key
+    frontier_coalesce_key_eqb frontier_coalesce_key_of.
+
 Definition deduplicate_vmp_frontier_states
     (states : list (FrontierState.t TState.t Ev.t)) :
     list (FrontierState.t TState.t Ev.t) :=
-  Exec.dedup_by_hash id states.
+  observe_vmp_frontier_states (Exec.dedup_by_hash id states).
 
 Lemma deduplicate_vmp_frontier_states_spec
     (x : FrontierState.t TState.t Ev.t) states :
   x ∈ deduplicate_vmp_frontier_states states ↔ x ∈ states.
 Proof.
-  unfold deduplicate_vmp_frontier_states.
+  unfold deduplicate_vmp_frontier_states, observe_vmp_frontier_states.
+  rewrite Exec.runtime_observe_by_key_eq.
   pose proof
     (Exec.elem_of_dedup_by_hash_key id states x) as Hspec.
   rewrite !List.map_id in Hspec.
