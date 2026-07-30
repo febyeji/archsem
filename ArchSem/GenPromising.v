@@ -685,7 +685,7 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
         let out_of_fuel := bool_decide (∃ r ∈ (Exec.results res).*2, ¬ (r : bool)) in
         let promises :=
           List.concat ((success_states.*1) ++ (Exec.errors res).*1.*1)
-            |> remove_dups in
+            |> Exec.remove_dups_by_hash in
         let promises := prom.(filter_promises) n tid mem promises in
         let tstates :=
           success_states

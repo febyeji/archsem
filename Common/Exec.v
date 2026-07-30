@@ -152,6 +152,60 @@ Proof.
   set_solver.
 Qed.
 
+Lemma NoDup_dedup_by_hash_seen_key {A K : Type} `{EqDecision K}
+    (key : A → K) (xs : list A) (seen : hash_buckets K) :
+  NoDup (map key (dedup_by_hash_seen key seen xs)).
+Proof.
+  revert seen.
+  induction xs as [|x xs IH]; intros seen.
+  - constructor.
+  - cbn [dedup_by_hash_seen].
+    case_decide as Hseen.
+    + apply IH.
+    + cbn [map]. constructor.
+      * intros Hin.
+        apply elem_of_dedup_by_hash_seen_key in Hin.
+        destruct Hin as [_ Hfresh].
+        apply Hfresh.
+        apply hash_bucket_contains_insert.
+        left. reflexivity.
+      * apply IH.
+Qed.
+
+Lemma NoDup_dedup_by_hash_key {A K : Type} `{EqDecision K}
+    (key : A → K) (xs : list A) :
+  NoDup (map key (dedup_by_hash key xs)).
+Proof. apply NoDup_dedup_by_hash_seen_key. Qed.
+
+(** Drop exact duplicates while preserving the same keep-last order as
+    stdpp's [remove_dups]. *)
+Definition remove_dups_by_hash {A : Type} `{EqDecision A}
+    (xs : list A) : list A :=
+  reverse (dedup_by_hash id (reverse xs)).
+
+Lemma elem_of_remove_dups_by_hash {A : Type} `{EqDecision A}
+    (xs : list A) (x : A) :
+  x ∈ remove_dups_by_hash xs ↔ x ∈ xs.
+Proof.
+  unfold remove_dups_by_hash.
+  rewrite elem_of_reverse.
+  pose proof (elem_of_dedup_by_hash_key id (reverse xs) x) as Hspec.
+  rewrite !List.map_id in Hspec.
+  rewrite Hspec, elem_of_reverse.
+  done.
+Qed.
+
+Lemma NoDup_remove_dups_by_hash {A : Type} `{EqDecision A}
+    (xs : list A) :
+  NoDup (remove_dups_by_hash xs).
+Proof.
+  unfold remove_dups_by_hash.
+  rewrite reverse_Permutation.
+  pose proof (NoDup_dedup_by_hash_key id (reverse xs)) as Hnodup.
+  rewrite List.map_id in Hnodup.
+  exact Hnodup.
+Qed.
+
 (** * Base execution result definitions *)
 Record res {E A : Type} := make {
     results: list A;
