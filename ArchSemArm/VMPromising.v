@@ -1123,8 +1123,7 @@ Module TLB.
 
       Returns [(vatlb', changed)] where [changed] is [true] if new entries
       were added. *)
-  Definition va_fill_root (vatlb : VATLB.t) (ts : TState.t)
-      (init : memoryMap)
+  Definition va_fill_root (vatlb : VATLB.t) (init : memoryMap)
       (mem : Memory.t)
       (time : nat)
       (va : prefix root_lvl)
@@ -1164,8 +1163,7 @@ Module TLB.
 
       Returns [(vatlb', changed)] where [changed] is [true] if a new entry
       was added. *)
-  Definition va_fill_lvl (vatlb : VATLB.t) (ts : TState.t)
-      (init : memoryMap)
+  Definition va_fill_lvl (vatlb : VATLB.t) (init : memoryMap)
       (mem : Memory.t)
       (time : nat)
       (ctxt : Ctxt.t)
@@ -1208,8 +1206,7 @@ Module TLB.
 
       Returns [(tlb', changed)] where [changed] is [true] if new entries
       were added. *)
-  Definition va_fill (tlb : t) (ts : TState.t)
-      (init : memoryMap)
+  Definition va_fill (tlb : t) (init : memoryMap)
       (mem : Memory.t)
       (time : nat)
       (lvl : Level)
@@ -1220,7 +1217,7 @@ Module TLB.
     '(vatlb_new, is_changed) ←
       match parent_lvl lvl with
       | None =>
-        va_fill_root tlb.(vatlb) ts init mem time (level_index va root_lvl)
+        va_fill_root tlb.(vatlb) init mem time (level_index va root_lvl)
                      upper asid_roots mem_strict
       | Some plvl =>
         let pva := level_prefix va plvl in
@@ -1232,7 +1229,7 @@ Module TLB.
           let tes := elements (VATLB.get ctxt tlb.(vatlb)) in
           foldlM (λ '(vatlb_prev, is_changed_prev) te,
             '(vatlb_lvl, is_changed_lvl) ←
-              va_fill_lvl vatlb_prev ts init mem time ctxt te index mem_strict;
+              va_fill_lvl vatlb_prev init mem time ctxt te index mem_strict;
             mret (vatlb_lvl, is_changed_lvl || is_changed_prev)
           ) prev tes
         ) (tlb.(vatlb), false) asid_roots
@@ -1275,19 +1272,38 @@ Module TLB.
       val_ttbrs ← ttbr_values_at ts reg_ttbr time;
       mret $ asids × val_ttbrs.
 
+  Definition update_with_asid_roots (tlb : t) (init : memoryMap)
+      (mem : Memory.t)
+      (time : nat)
+      (va : bv 64)
+      (reg_ttbr : reg)
+      (asid_roots : list (bv 16 * bv 64)) : result string (t * bool) :=
+    upper ← othrow "The register is not TTBR" (is_upper_ttbr reg_ttbr);
+    foldlM (λ '(tlb_prev, is_changed_prev) lvl,
+      '(tlb_new, is_changed) ←
+        va_fill tlb_prev init mem time lvl va upper asid_roots (*strict*)true;
+      mret (tlb_new, is_changed || is_changed_prev)
+    ) (tlb, false) (enum Level).
+
   Definition update (tlb : t) (ts : TState.t)
       (init : memoryMap)
       (mem : Memory.t)
       (time : nat)
       (va : bv 64)
       (reg_asid_ttbr reg_ttbr : reg) : result string (t * bool) :=
-    upper ← othrow "The register is not TTBR" (is_upper_ttbr reg_ttbr);
     asid_roots ← ttbr_asid_roots_at ts reg_asid_ttbr reg_ttbr time;
-    foldlM (λ '(tlb_prev, is_changed_prev) lvl,
-      '(tlb_new, is_changed) ←
-        va_fill tlb_prev ts init mem time lvl va upper asid_roots (*strict*)true;
-      mret (tlb_new, is_changed || is_changed_prev)
-    ) (tlb, false) (enum Level).
+    update_with_asid_roots
+      tlb init mem time va reg_ttbr asid_roots.
+
+  Lemma update_tstate_dependency tlb ts1 ts2 init mem time va
+      reg_asid_ttbr reg_ttbr :
+    ts1.(TState.regs) = ts2.(TState.regs) →
+    ts1.(TState.levs) = ts2.(TState.levs) →
+    update tlb ts1 init mem time va reg_asid_ttbr reg_ttbr =
+    update tlb ts2 init mem time va reg_asid_ttbr reg_ttbr.
+  Proof.
+    destruct ts1, ts2. cbn. intros. subst. reflexivity.
+  Qed.
 
   (** ** TLB Traversal for BBM checking *)
 
@@ -1296,8 +1312,7 @@ Module TLB.
       iterates over all 512 possible root indices to build a complete TLB.
 
       The [mem_strict] param decides if non-existing memory triggers an error. *)
-  Definition traverse_root (vatlb : VATLB.t) (ts : TState.t)
-        (init : memoryMap)
+  Definition traverse_root (vatlb : VATLB.t) (init : memoryMap)
         (mem : Memory.t)
         (time : nat)
         (upper : bool)
@@ -1305,7 +1320,7 @@ Module TLB.
         (mem_strict : bool) : result string (VATLB.t * bool) :=
     foldlM (λ '(vatlb_prev, is_changed_prev) index,
       '(vatlb_new, is_changed) ←
-        va_fill_root vatlb_prev ts init mem time index upper asid_roots mem_strict;
+        va_fill_root vatlb_prev init mem time index upper asid_roots mem_strict;
       mret (vatlb_new, is_changed || is_changed_prev)
     ) (vatlb, false) (enum (bv 9)).
 
@@ -1313,15 +1328,14 @@ Module TLB.
       Iterates over all 512 indices at the next level to extend the TLB.
 
       The [mem_strict] param decides if non-existing memory triggers an error. *)
-  Definition traverse_lvl (vatlb : VATLB.t) (ts : TState.t)
-        (init : memoryMap)
+  Definition traverse_lvl (vatlb : VATLB.t) (init : memoryMap)
         (mem : Memory.t)
         (time : nat)
         (fe : FE.t)
         (mem_strict : bool) : result string (VATLB.t * bool) :=
     foldlM (λ '(vatlb_prev, is_changed_prev) index,
       '(vatlb_new, is_changed_new) ←
-        va_fill_lvl vatlb_prev ts init mem time (FE.ctxt fe) (projT2 fe) index mem_strict;
+        va_fill_lvl vatlb_prev init mem time (FE.ctxt fe) (projT2 fe) index mem_strict;
       mret (vatlb_new, is_changed_new || is_changed_prev)
     ) (vatlb, false) (enum (bv 9)).
 
@@ -1330,8 +1344,7 @@ Module TLB.
       existing parent entries using [traverse_lvl].
 
       The [mem_strict] param decides if non-existing memory triggers an error. *)
-  Definition traverse (tlb : t) (ts : TState.t)
-      (init : memoryMap)
+  Definition traverse (tlb : t) (init : memoryMap)
       (mem : Memory.t)
       (time : nat)
       (lvl : Level)
@@ -1340,7 +1353,7 @@ Module TLB.
       (mem_strict : bool) : result string (t * bool) :=
     '(vatlb_new, is_changed) ←
       match parent_lvl lvl with
-      | None => traverse_root tlb.(vatlb) ts init mem time upper asid_roots mem_strict
+      | None => traverse_root tlb.(vatlb) init mem time upper asid_roots mem_strict
       | Some plvl =>
         let asids := map fst asid_roots in
         let fes :=
@@ -1349,7 +1362,7 @@ Module TLB.
               then Some fe
               else None) (elements tlb.(vatlb)) in
         foldlM (λ '(vatlb, is_changed_prev) fe,
-          '(vatlb_new, is_changed) ← traverse_lvl vatlb ts init mem time fe mem_strict;
+          '(vatlb_new, is_changed) ← traverse_lvl vatlb init mem time fe mem_strict;
           mret (vatlb_new, is_changed || is_changed_prev)
         ) (tlb.(vatlb), false) fes
       end;
@@ -1370,7 +1383,7 @@ Module TLB.
     asid_roots ← ttbr_asid_roots_at ts reg_asid_ttbr reg_ttbr time;
     foldlM (λ '(tlb_prev, is_changed_prev) lvl,
       '(tlb_new, is_changed) ←
-          traverse tlb_prev ts init mem time lvl upper asid_roots mem_strict;
+          traverse tlb_prev init mem time lvl upper asid_roots mem_strict;
       mret (tlb_new, is_changed || is_changed_prev)
     ) (tlb, false) (enum Level).
 
@@ -1469,12 +1482,68 @@ Module TLB.
         ts mem_init mem tlb time_cur ccnt tid va reg_asid_ttbr reg_ttbr acc
     end.
 
+  Lemma unique_snapshots_va_between_tstate_dependency
+      ts1 ts2 mem_init mem tlb_prev time_prev cnt tid va
+      reg_asid_ttbr reg_ttbr acc :
+    ts1.(TState.regs) = ts2.(TState.regs) →
+    ts1.(TState.levs) = ts2.(TState.levs) →
+    unique_snapshots_va_between
+      ts1 mem_init mem tlb_prev time_prev cnt tid va
+      reg_asid_ttbr reg_ttbr acc =
+    unique_snapshots_va_between
+      ts2 mem_init mem tlb_prev time_prev cnt tid va
+      reg_asid_ttbr reg_ttbr acc.
+  Proof.
+    intros Hregs Hlevs.
+    revert tlb_prev time_prev acc.
+    induction cnt as [|cnt IH]; intros tlb_prev time_prev acc.
+    - reflexivity.
+    - cbn [unique_snapshots_va_between].
+      destruct (mem !! (time_prev + 1)) as [ev |] eqn:Hmem.
+      + destruct
+          (if ev is Ev.Tlbi tlbi recipient
+           then apply_tlbi_for_tid tid tlbi recipient tlb_prev
+           else (tlb_prev, false)) as [tlb_inv changed] eqn:Htlbi.
+        rewrite (update_tstate_dependency
+          tlb_inv ts1 ts2 mem_init mem (time_prev + 1) va
+          reg_asid_ttbr reg_ttbr Hregs Hlevs).
+        destruct (update tlb_inv ts2 mem_init mem (time_prev + 1) va
+          reg_asid_ttbr reg_ttbr) as [[tlb changed_update] | err].
+        * cbn. apply IH.
+        * reflexivity.
+      + cbn. apply IH.
+  Qed.
+
+  #[local] Existing Instance TState.reg_view_sig_eq_dec.
+
+  Record snapshot_va_cache_key :=
+    make_snapshot_va_cache_key {
+        snapshot_regs : dmap reg (λ reg, (reg_type reg * view)%type);
+        snapshot_levs : list LEv.t;
+        snapshot_mem_init : memoryMap;
+        snapshot_mem : Memory.t;
+        snapshot_time : nat;
+        snapshot_tid : nat;
+        snapshot_va : bv 64;
+        snapshot_reg_asid_ttbr : reg;
+        snapshot_reg_ttbr : reg
+      }.
+
+  #[global] Instance snapshot_va_cache_key_eq_dec :
+      EqDecision snapshot_va_cache_key.
+  Proof. intros [] []. decide_eq. Defined.
+
+  Definition snapshot_va_cache_key_eqb
+      (x y : snapshot_va_cache_key) : bool :=
+    bool_decide (x = y).
+
   (** Compute all unique TLB snapshots for a specific VA from time 0 to [time].
 
       Initializes the TLB at time 0, then calls [unique_snapshots_va_between]
       to track changes. Returns snapshots in descending timestamp order,
-      including the initial state at time 0.  *)
-  Definition unique_snapshots_va_until (ts : TState.t)
+      including the initial state at time 0. *)
+  Definition unique_snapshots_va_until_uncached
+                       (ts : TState.t)
                        (mem_init : memoryMap)
                        (mem : Memory.t)
                        (time : nat)
@@ -1485,6 +1554,61 @@ Module TLB.
     '(tlb, _) ← update init ts mem_init mem 0 va reg_asid_ttbr reg_ttbr;
     unique_snapshots_va_between
       ts mem_init mem tlb 0 time tid va reg_asid_ttbr reg_ttbr [(tlb, 0)].
+
+  Lemma unique_snapshots_va_until_uncached_tstate_dependency
+      ts1 ts2 mem_init mem time tid va reg_asid_ttbr reg_ttbr :
+    ts1.(TState.regs) = ts2.(TState.regs) →
+    ts1.(TState.levs) = ts2.(TState.levs) →
+    unique_snapshots_va_until_uncached
+      ts1 mem_init mem time tid va reg_asid_ttbr reg_ttbr =
+    unique_snapshots_va_until_uncached
+      ts2 mem_init mem time tid va reg_asid_ttbr reg_ttbr.
+  Proof.
+    intros Hregs Hlevs.
+    unfold unique_snapshots_va_until_uncached.
+    rewrite (update_tstate_dependency
+      init ts1 ts2 mem_init mem 0 va reg_asid_ttbr reg_ttbr Hregs Hlevs).
+    destruct (update init ts2 mem_init mem 0 va
+      reg_asid_ttbr reg_ttbr) as [[tlb changed] | err].
+    - cbn. apply unique_snapshots_va_between_tstate_dependency;
+        assumption.
+    - reflexivity.
+  Qed.
+
+  (** This definition becomes one bounded process-local hash table after
+      extraction. Exact key equality is checked within every hash bucket.
+      Only the register map and local-event history are retained from [ts]:
+      those are the fields read by [ttbr_asid_roots_at], while TLB filling
+      depends on the remaining explicit arguments. *)
+  Definition unique_snapshots_va_cache :
+      snapshot_va_cache_key →
+      (unit → result string (list (t * nat))) →
+      result string (list (t * nat)) :=
+    Exec.runtime_cache_by_hash snapshot_va_cache_key_eqb.
+
+  Definition unique_snapshots_va_until (ts : TState.t)
+                       (mem_init : memoryMap)
+                       (mem : Memory.t)
+                       (time : nat)
+                       (tid : nat)
+                       (va : bv 64)
+                       (reg_asid_ttbr reg_ttbr : reg) :
+                      result string (list (t * nat)) :=
+    unique_snapshots_va_cache
+      (make_snapshot_va_cache_key
+        ts.(TState.regs) ts.(TState.levs)
+        mem_init mem time tid va reg_asid_ttbr reg_ttbr)
+      (λ _,
+        unique_snapshots_va_until_uncached
+          ts mem_init mem time tid va reg_asid_ttbr reg_ttbr).
+
+  Lemma unique_snapshots_va_until_eq ts mem_init mem time tid va
+      reg_asid_ttbr reg_ttbr :
+    unique_snapshots_va_until
+      ts mem_init mem time tid va reg_asid_ttbr reg_ttbr =
+    unique_snapshots_va_until_uncached
+      ts mem_init mem time tid va reg_asid_ttbr reg_ttbr.
+  Proof. apply Exec.runtime_cache_by_hash_eq. Qed.
 
   (** Find snapshots at or after [time].
 

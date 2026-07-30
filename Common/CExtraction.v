@@ -58,6 +58,68 @@ Extraction Inline decide.
 Extraction Inline decide_rel.
 Extract Inlined Constant Exec.runtime_hash =>
   "(fun x -> ZO.succ (ZO.of_int (Hashtbl.hash x)))".
+Extract Inlined Constant Exec.runtime_cache_by_hash =>
+  "(fun eqb ->
+     let table = Hashtbl.create 32 in
+     let order = Queue.create () in
+     let cached = ref 0 in
+     let hits = ref 0 in
+     let misses = ref 0 in
+     let evictions = ref 0 in
+     let () =
+       at_exit (fun () ->
+         match Sys.getenv_opt ""ARCHSEM_MEMO_STATS"" with
+         | Some ""1"" ->
+             Printf.eprintf
+               ""ArchSem memo: hits=%d misses=%d evictions=%d cached=%d buckets=%d\n%!""
+               !hits !misses !evictions !cached (Hashtbl.length table)
+         | _ -> ())
+     in
+     let evict_one () =
+       if !cached >= 16 then begin
+         let (old_hash, old_x) = Queue.take order in
+         match Hashtbl.find_opt table old_hash with
+         | None -> ()
+         | Some bucket ->
+             let bucket' =
+               Stdlib.List.filter
+                 (fun (x', _) -> not (eqb old_x x')) bucket
+             in
+             if bucket' = [] then Hashtbl.remove table old_hash
+             else Hashtbl.replace table old_hash bucket';
+             decr cached;
+             incr evictions
+       end
+     in
+     let insert hash x y =
+       evict_one ();
+       let bucket =
+         match Hashtbl.find_opt table hash with
+         | None -> []
+         | Some bucket -> bucket
+       in
+       Hashtbl.replace table hash ((x, y) :: bucket);
+       Queue.add (hash, x) order;
+       incr cached
+     in
+     fun x thunk ->
+       let hash = Hashtbl.hash x in
+       match Hashtbl.find_opt table hash with
+       | None ->
+           incr misses;
+           let y = thunk () in
+           insert hash x y;
+           y
+       | Some bucket ->
+           match Stdlib.List.find_opt (fun (x', _) -> eqb x x') bucket with
+           | Some (_, y) ->
+               incr hits;
+               y
+           | None ->
+               incr misses;
+               let y = thunk () in
+               insert hash x y;
+               y)".
 
 (** * Integers
 

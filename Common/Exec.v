@@ -59,6 +59,16 @@ Module Exec.
     collisions cannot change the result. *)
 Definition runtime_hash {A : Type} (_ : A) : positive := 1%positive.
 
+(** Pure cache boundary. Rocq evaluates the thunk directly; extraction may
+    retain its result in a bounded process-local table. *)
+Definition runtime_cache_by_hash {A B : Type}
+    (eqb : A → A → bool) (_ : A) (thunk : unit → B) : B := thunk tt.
+
+Lemma runtime_cache_by_hash_eq {A B : Type}
+    (eqb : A → A → bool) (key : A) (thunk : unit → B) :
+  runtime_cache_by_hash eqb key thunk = thunk tt.
+Proof. reflexivity. Qed.
+
 (** Equality buckets for exact de-duplication without requiring [Countable] on
     the de-duplication key. *)
 Definition hash_buckets (K : Type) := gmap positive (list K).
