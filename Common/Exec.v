@@ -53,6 +53,11 @@ Require Import Effects.
 
 Module Exec.
 
+(** Pure cache boundary. Rocq evaluates the thunk directly; extraction may
+    retain its result in a bounded process-local table. *)
+Definition runtime_cache_by_hash {A B : Type}
+    (_ : A → A → bool) (_ : A) (thunk : unit → B) : B := thunk tt.
+
 (** * Base execution result definitions *)
 Record res {E A : Type} := make {
     results: list A;

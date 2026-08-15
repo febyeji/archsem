@@ -695,6 +695,45 @@ Module TState.
     (update vcse v) ∘ (set levs (LEv.Cse v ::.)).
 End TState.
 
+(** The part of a thread's register state observed by a translation walk for
+    one TTBR. Writes to other registers and non-CSE local events are omitted. *)
+Module TranslationRegState.
+  Inductive event :=
+  | Cse (time : view)
+  | Write (value : option (bv 64)) (time : view).
+
+  #[global] Instance event_eq_dec : EqDecision event.
+  Proof. solve_decision. Defined.
+
+  Record t :=
+    make {
+        initial : option (option (bv 64) * view);
+        events : list event;
+      }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
+
+  Definition initial_of (ts : TState.t) (ttbr : reg) :=
+    match dmap_lookup ttbr ts.(TState.regs) with
+    | None => None
+    | Some (value, time) => Some (regval_to_val ttbr value, time)
+    end.
+
+  Definition event_of (ttbr : reg) (lev : LEv.t) : option event :=
+    match lev with
+    | LEv.Cse time => Some (Cse time)
+    | LEv.Wsreg wsreg =>
+      match WSReg.to_val_view_if ttbr wsreg with
+      | None => None
+      | Some (value, time) => Some (Write (regval_to_val ttbr value) time)
+      end
+    end.
+
+  Definition of_tstate (ts : TState.t) (ttbr : reg) : t :=
+    make (initial_of ts ttbr) (omap (event_of ttbr) ts.(TState.levs)).
+End TranslationRegState.
+
 (*** VA helper ***)
 
 Definition Level := fin 4.
@@ -1430,7 +1469,7 @@ Module TLB.
       Initializes the TLB at time 0, then calls [unique_snapshots_va_between]
       to track changes. Returns snapshots in descending timestamp order,
       including the initial state at time 0.  *)
-  Definition unique_snapshots_va_until (ts : TState.t)
+  Definition unique_snapshots_va_until_uncached (ts : TState.t)
                        (mem_init : memoryMap)
                        (mem : Memory.t)
                        (time : nat)
@@ -1441,6 +1480,51 @@ Module TLB.
     '(tlb, _) ← update init ts mem_init mem 0 va reg_asid_ttbr reg_ttbr;
     unique_snapshots_va_between
       ts mem_init mem tlb 0 time tid va reg_asid_ttbr reg_ttbr [(tlb, 0)].
+
+  Record SnapshotVACacheKey :=
+    make_snapshot_va_cache_key {
+        snapshot_va_asid_reg_state : TranslationRegState.t;
+        snapshot_va_root_reg_state : TranslationRegState.t;
+        snapshot_va_mem_init : memoryMap;
+        snapshot_va_mem : Memory.t;
+        snapshot_va_time : nat;
+        snapshot_va_tid : nat;
+        snapshot_va_address : bv 64;
+        snapshot_va_asid_ttbr : reg;
+        snapshot_va_root_ttbr : reg;
+      }.
+
+  #[local] Instance snapshot_va_cache_key_eq_dec :
+      EqDecision SnapshotVACacheKey.
+  Proof. solve_decision. Defined.
+
+  Definition snapshot_va_cache_key_eqb
+      (x y : SnapshotVACacheKey) : bool :=
+    bool_decide (x = y).
+
+  Definition SnapshotVACache :=
+    SnapshotVACacheKey →
+    (unit → result string (list (t * nat))) →
+    result string (list (t * nat)).
+
+  Definition shared_snapshot_va_cache : SnapshotVACache :=
+    Exec.runtime_cache_by_hash snapshot_va_cache_key_eqb.
+
+  Definition unique_snapshots_va_until (ts : TState.t)
+                       (mem_init : memoryMap)
+                       (mem : Memory.t)
+                       (time : nat)
+                       (tid : nat)
+                       (va : bv 64)
+                       (reg_asid_ttbr reg_ttbr : reg) :
+                      result string (list (t * nat)) :=
+    shared_snapshot_va_cache
+      (make_snapshot_va_cache_key
+        (TranslationRegState.of_tstate ts reg_asid_ttbr)
+        (TranslationRegState.of_tstate ts reg_ttbr)
+        mem_init mem time tid va reg_asid_ttbr reg_ttbr)
+      (λ _, unique_snapshots_va_until_uncached
+        ts mem_init mem time tid va reg_asid_ttbr reg_ttbr).
 
   (** Find snapshots at or after [time].
 
@@ -2357,6 +2441,150 @@ Definition ets3 (ts : TState.t) : result string bool :=
     (regval_to_val ID_AA64MMFR1_EL1 mmfr1);
   mret (bv_extract 36 4 val =? 3%bv).
 
+Definition TransStartCandidate := (IIS.TransRes.t * option nat)%type.
+
+Definition TransStartEntry := TLB.trans_candidate.
+
+Fixpoint trans_start_candidates_of_entries
+    (ttbr : reg) (va : bv 64) (clear_inv_time : bool)
+    (entries : list TransStartEntry) :
+    result string (list TransStartCandidate) :=
+  match entries with
+  | [] => Ok []
+  | candidate :: entries =>
+    match val_to_regval ttbr candidate.(TLB.candidate_ttbr) with
+    | None =>
+      Error
+        "TTBR value type does not match with the value from the translation"
+    | Some val_ttbr =>
+      match trans_start_candidates_of_entries
+        ttbr va clear_inv_time entries with
+      | Error err => Error err
+      | Ok candidates =>
+        let root := Some (existT ttbr val_ttbr) in
+        let ti :=
+          if clear_inv_time then None
+          else candidate.(TLB.candidate_inv_time) in
+        Ok ((IIS.TransRes.make
+          (va_to_vpn va)
+          candidate.(TLB.candidate_start)
+          candidate.(TLB.candidate_end)
+          root candidate.(TLB.candidate_path), ti) :: candidates)
+      end
+    end
+  end.
+
+(** Enumerate the translation choices for an in-range virtual address. State
+    updates are deliberately kept out of this function so extracted runtimes
+    can share the pure result between equivalent thread states. *)
+Definition enumerate_trans_start_candidates
+    (ts : TState.t) (init : memoryMap) (mem : Memory.t)
+    (tid : nat) (va : bv 64) (asid : bv 16)
+    (reg_asid_ttbr reg_ttbr : reg)
+    (is_ifetch is_ets2 : bool) (vpre_t : view) :
+    result string (list TransStartCandidate) :=
+  match TLB.unique_snapshots_va_until
+    ts init mem (length mem) tid va reg_asid_ttbr reg_ttbr with
+  | Error err => Error err
+  | Ok snapshots =>
+    let vmax_t := length mem in
+    let invalid_start_time :=
+      vpre_t ⊔ view_if is_ets2 (ts.(TState.vwr) ⊔ ts.(TState.vrd)) in
+    let invalid_snapshots :=
+      TLB.snapshots_from_until invalid_start_time vmax_t snapshots in
+    let snapshots :=
+      TLB.snapshots_from_until vpre_t vmax_t snapshots in
+    match TLB.get_valid_entries_from_snapshots snapshots mem tid va asid with
+    | Error err => Error err
+    | Ok valid_entries =>
+      match TLB.get_invalid_entries_from_snapshots
+        invalid_snapshots ts init mem tid va asid reg_ttbr with
+      | Error err => Error err
+      | Ok invalid_entries =>
+        match trans_start_candidates_of_entries
+          reg_ttbr va is_ifetch valid_entries with
+        | Error err => Error err
+        | Ok valid_res =>
+          match trans_start_candidates_of_entries
+            reg_ttbr va false invalid_entries with
+          | Error err => Error err
+          | Ok invalid_res => Ok (valid_res ++ invalid_res)
+          end
+        end
+      end
+    end
+  end.
+
+(** Only values observed while enumerating translation candidates belong in
+    this key. In particular, [vrd] and [vwr] are represented by their join;
+    all unrelated thread-state fields are omitted. *)
+Record TransStartCacheKey :=
+  make_trans_start_cache_key {
+      trans_start_asid_reg_state : TranslationRegState.t;
+      trans_start_root_reg_state : TranslationRegState.t;
+      trans_start_mem_init : memoryMap;
+      trans_start_mem : Memory.t;
+      trans_start_tid : nat;
+      trans_start_va : bv 64;
+      trans_start_asid : bv 16;
+      trans_start_asid_ttbr : reg;
+      trans_start_root_ttbr : reg;
+      trans_start_is_ifetch : bool;
+      trans_start_is_ets2 : bool;
+      trans_start_vpre : view;
+      trans_start_rw_view : view;
+    }.
+
+#[local] Instance trans_start_cache_key_eq_dec :
+    EqDecision TransStartCacheKey.
+Proof. solve_decision. Defined.
+
+Definition trans_start_cache_key_eqb
+    (x y : TransStartCacheKey) : bool :=
+  bool_decide (x = y).
+
+Definition TransStartCache :=
+  TransStartCacheKey →
+  (unit → result string (list TransStartCandidate)) →
+  result string (list TransStartCandidate).
+
+Definition shared_trans_start_cache : TransStartCache :=
+  Exec.runtime_cache_by_hash trans_start_cache_key_eqb.
+
+(** Build the pure candidate set for a translation start. *)
+Definition select_trans_start (trans_start : TranslationStartInfo)
+    (tid : nat) (init : memoryMap) (ts : TState.t) (iis : IIS.t)
+    (mem : Memory.t) : result string (list TransStartCandidate) :=
+  let is_ifetch :=
+    trans_start.(TranslationStartInfo_accdesc).(AccessDescriptor_acctype) =?
+    AccessType_IFETCH in
+  match ets2 ts with
+  | Error err => Error err
+  | Ok is_ets2 =>
+    let vpre_t := ts.(TState.vcse) ⊔ IIS.strict iis ⊔
+                   (view_if (is_ets2 && (negb is_ifetch)) ts.(TState.vdsb)) in
+    let asid := trans_start.(TranslationStartInfo_asid) in
+    let va : bv 64 := trans_start.(TranslationStartInfo_va) in
+    if decide (va_in_range va) then
+      match ttbrs_of_regime ts va trans_start.(TranslationStartInfo_regime) with
+      | Error err => Error err
+      | Ok (reg_asid_ttbr, reg_ttbr) =>
+        let key :=
+          make_trans_start_cache_key
+            (TranslationRegState.of_tstate ts reg_asid_ttbr)
+            (TranslationRegState.of_tstate ts reg_ttbr)
+            init mem tid va asid reg_asid_ttbr reg_ttbr
+            is_ifetch is_ets2 vpre_t (ts.(TState.vwr) ⊔ ts.(TState.vrd)) in
+        shared_trans_start_cache key (λ _,
+          enumerate_trans_start_candidates
+            ts init mem tid va asid reg_asid_ttbr reg_ttbr
+            is_ifetch is_ets2 vpre_t)
+      end
+    else
+      Ok [(IIS.TransRes.make
+        (va_to_vpn va) vpre_t (length mem) None [], None)]
+  end.
+
 (** Handle the start of an address translation.
 
     This is called when the architecture initiates a translation table walk.
@@ -2375,70 +2603,11 @@ Definition run_trans_start (trans_start : TranslationStartInfo)
   ts ← mget PPState.state;
   iis ← mget PPState.iis;
   mem ← mget PPState.mem;
-
-  let is_ifetch :=
-    trans_start.(TranslationStartInfo_accdesc).(AccessDescriptor_acctype) =?
-    AccessType_IFETCH in
-  is_ets2 ← mlift (ets2 ts);
-  let vpre_t := ts.(TState.vcse) ⊔ IIS.strict iis ⊔
-                 (view_if (is_ets2 && (negb is_ifetch)) ts.(TState.vdsb)) in
-  let vmax_t := length mem in
-  (* lookup (successful results or faults) *)
   let asid := trans_start.(TranslationStartInfo_asid) in
   let va : bv 64 := trans_start.(TranslationStartInfo_va) in
   let size := Z.to_N trans_start.(TranslationStartInfo_size) in
-
-  trans_res ←
-    if decide (va_in_range va) then
-      '(reg_asid_ttbr, reg_ttbr) ← mlift $
-        ttbrs_of_regime ts va trans_start.(TranslationStartInfo_regime);
-      snapshots ←
-        mlift $
-          TLB.unique_snapshots_va_until ts init mem vmax_t tid va reg_asid_ttbr reg_ttbr;
-      let invalid_start_time :=
-        vpre_t ⊔ view_if is_ets2 (ts.(TState.vwr) ⊔ ts.(TState.vrd)) in
-      let invalid_snapshots :=
-        TLB.snapshots_from_until invalid_start_time vmax_t snapshots in
-      let snapshots :=
-        TLB.snapshots_from_until vpre_t vmax_t snapshots in
-      valid_entries ← mlift $
-        TLB.get_valid_entries_from_snapshots snapshots mem tid va asid;
-      invalid_entries ← mlift $
-        TLB.get_invalid_entries_from_snapshots
-          invalid_snapshots ts init mem tid va asid reg_ttbr;
-      (* update IIS with either a valid translation result or an invalid result *)
-      valid_res ←
-        for candidate in valid_entries do
-          val_ttbr ← othrow
-            "TTBR value type does not match with the value from the translation"
-            (val_to_regval reg_ttbr candidate.(TLB.candidate_ttbr));
-          let root := (Some (existT reg_ttbr val_ttbr)) in
-          let ti :=
-            if is_ifetch then None else candidate.(TLB.candidate_inv_time) in
-          mret $
-            (IIS.TransRes.make
-              (va_to_vpn va)
-              candidate.(TLB.candidate_start)
-              candidate.(TLB.candidate_end)
-              root candidate.(TLB.candidate_path), ti)
-        end;
-      invalid_res ←
-        for candidate in invalid_entries do
-          val_ttbr ← othrow
-            "TTBR value type does not match with the value from the translation"
-            (val_to_regval reg_ttbr candidate.(TLB.candidate_ttbr));
-          let root := (Some (existT reg_ttbr val_ttbr)) in
-          mret $
-            (IIS.TransRes.make
-              (va_to_vpn va)
-              candidate.(TLB.candidate_start)
-              candidate.(TLB.candidate_end)
-              root candidate.(TLB.candidate_path),
-              candidate.(TLB.candidate_inv_time))
-        end;
-      mchoosel (valid_res ++ invalid_res)
-    else
-      mret $ (IIS.TransRes.make (va_to_vpn va) vpre_t vmax_t None [], None);
+  candidates ← mlift $ select_trans_start trans_start tid init ts iis mem;
+  trans_res ← mchoosel candidates;
   let '(tres, inv_time) := trans_res in
   let page_offsets := TState.va_page_offsets va size in
   guard_discard (TState.tcohs_before_inv_time asid page_offsets inv_time ts);;

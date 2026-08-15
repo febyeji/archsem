@@ -56,6 +56,8 @@ Extract Inlined Constant Decision => "bool".
 Extract Inlined Constant Bool.eqb => "(=)".
 Extraction Inline decide.
 Extraction Inline decide_rel.
+Extract Inlined Constant Exec.runtime_cache_by_hash =>
+  "RuntimeCache.by_hash".
 
 (** * Integers
 
