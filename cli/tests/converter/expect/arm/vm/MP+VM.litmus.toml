@@ -17,61 +17,55 @@ name = "MP+VM"
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x200000
+  addr = 0x400000
   step = 8
-  data = 0x201003
+  data = 0x401003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x201000
+  addr = 0x401000
   step = 8
-  data = 0x202003
+  data = 0x402003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x202000
+  addr = 0x402000
   step = 8
-  data = 0x203003
+  data = 0x4c1
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x202008
+  addr = 0x402008
   step = 8
-  data = 0x200441
+  data = 0x403003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203008
+  addr = 0x402010
   step = 8
-  data = 0x14c3
+  data = 0x400441
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203010
+  addr = 0x403000
   step = 8
-  data = 0x24c3
+  data = 0x202443
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203018
+  addr = 0x403008
   step = 8
-  data = 0x400443
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x203020
-  step = 8
-  data = 0x401443
+  data = 0x203443
 
 [[memory]]
   sym = "pa_x"
-  addr = 0x400000
+  addr = 0x202000
   step = 8
   data = 0
 
 [[memory]]
   sym = "pa_y"
-  addr = 0x401000
+  addr = 0x203000
   step = 8
   data = 0
 
@@ -83,12 +77,12 @@ name = "MP+VM"
 [thread."0".regs]
   _PC = 0x1000
   "R0" = 1
-  "R1" = 0x3000
+  "R1" = 0x200000
   "R2" = 1
-  "R3" = 0x4000
+  "R3" = 0x201000
   "SCTLR_EL1" = 1
   CurrentEL = 1
-  "TTBR0_EL1" = 0x200000
+  "TTBR0_EL1" = 0x400000
   "R4" = 0
   "R5" = 0
   "R6" = 0
@@ -127,11 +121,11 @@ name = "MP+VM"
 
 [thread."1".regs]
   _PC = 0x2000
-  "R1" = 0x4000
-  "R3" = 0x3000
+  "R1" = 0x201000
+  "R3" = 0x200000
   "SCTLR_EL1" = 1
   CurrentEL = 1
-  "TTBR0_EL1" = 0x200000
+  "TTBR0_EL1" = 0x400000
   "R0" = 0
   "R2" = 0
   "R4" = 0

@@ -81,7 +81,7 @@ let pte_addr name entries ~base ~va ~level =
 
 (** [pteN(va, base)] treats [base] as the root translation-table PA, then
     returns the identity-mapped VA of the matching PTE. *)
-let pte_function entries level =
+let pte_function entries table_pages level =
   let name = Printf.sprintf "pte%d" level in
   ( name,
     function
@@ -89,12 +89,16 @@ let pte_function entries level =
         let va = Fn_registry.int_arg name "va" va in
         let base = Fn_registry.int_arg name "base" base in
         let pte_pa = pte_addr name entries ~base ~va ~level in
-        let offset = pte_pa - base in
-        if offset < 0 || offset >= Allocator.big_size then
-          Fn_registry.error
-            "%s: PTE level %d for VA 0x%x was resolved at PA 0x%x which is \
-             outside page-table pool rooted at 0x%x"
-             name level va pte_pa base;
+        Option.iter
+          (fun table_pages ->
+             let page = pte_pa - (pte_pa mod Allocator.page_size) in
+             if not (List.mem page table_pages) then
+               Fn_registry.error
+                 "%s: PTE level %d for VA 0x%x was resolved at PA 0x%x which is \
+                  not an allocated page of the table rooted at 0x%x"
+                  name level va pte_pa base
+           )
+          table_pages;
         Z.of_int pte_pa
     | args -> Fn_registry.arity_error name 2 (List.length args)
   )
@@ -158,14 +162,14 @@ let mkdesc_function level =
   in
   (name, eval)
 
-let positional_functions ?page_table_entries () =
+let positional_functions ?page_table_entries ?page_table_pages () =
   let functions = [page_function; asid_function] in
   match page_table_entries with
   | None -> functions
   | Some page_table_entries ->
       let levels = [0; 1; 2; 3] in
       functions
-      @ List.map (pte_function page_table_entries) levels
+      @ List.map (pte_function page_table_entries page_table_pages) levels
       @ List.map (desc_function page_table_entries) levels
 
 let keyword_functions : Fn_registry.keyword_fn list =

@@ -100,9 +100,11 @@ let eval_error context fmt =
     (fun msg -> raise (Eval_error (eval_context_path context, msg)))
     fmt
 
-let eval_term ?page_table_entries ~context ~lookup_addr term =
+let eval_term ?page_table_entries ?page_table_pages ~context ~lookup_addr term =
   try
-    let value = Term.eval ?page_table_entries ~lookup_addr term in
+    let value =
+      Term.eval ?page_table_entries ?page_table_pages ~lookup_addr term
+    in
     match context with
     (* Final constants stay raw Z.t; registers read via bv_unsigned. *)
     | Final_assertion when Z.sign value < 0 ->
@@ -132,6 +134,14 @@ let reserved_section_addrs sections =
 
 let thread_section_name tid = Printf.sprintf "__thread%d" tid
 
+let block_base size addr = addr - (addr mod size)
+
+let unique_blocks addrs =
+  List.map (block_base Allocator.big_size) addrs |> List.sort_uniq Int.compare
+
+let regions_of_blocks blocks =
+  List.map (fun base -> Allocator.{base; size = Allocator.big_size}) blocks
+
 let symbolic_names ir =
   let add names name = if List.mem name names then names else names @ [name] in
   List.fold_left
@@ -141,15 +151,196 @@ let symbolic_names ir =
        )
     ir.Ir.symbolic ir.Ir.page_table_setup
 
+let checked_virtual_alignment alignment =
+  let alignment =
+    try Z.to_int alignment
+    with Z.Overflow ->
+      eval_error Page_table_setup "page_table: virtual alignment is out of range"
+  in
+  if alignment <= 0 || alignment mod Allocator.page_size <> 0 then
+    eval_error Page_table_setup
+      "page_table: virtual alignment must be a positive multiple of page size: %d"
+      alignment;
+  alignment
+
+let checked_mapping_alignment level =
+  try Page_table_desc.level_size level
+  with Invalid_argument _ ->
+    eval_error Page_table_setup "page_table: invalid mapping level: %d" level
+
+let symbolic_va_alignments ir =
+  let virtual_names = symbolic_names ir in
+  let alignment_requests =
+    List.concat_map
+      (function
+        | Page_table_ast.AlignedVirtual {alignment; names} ->
+            let alignment = checked_virtual_alignment alignment in
+            List.iter
+              (fun name ->
+                 if not (List.mem name virtual_names) then
+                   eval_error Page_table_setup "page_table: undeclared VA: %s"
+                     name
+               )
+              names;
+            List.map (fun name -> (name, alignment)) names
+        | Page_table_ast.Mapping {va_name; level = Some level; _}
+         |Page_table_ast.MaybeMapping {va_name; level = Some level; _} ->
+            [(va_name, checked_mapping_alignment level)]
+        | _ -> []
+        )
+      ir.Ir.page_table_setup
+  in
+  let alignment_for name =
+    List.fold_left
+      (fun best (aligned_name, alignment) ->
+         if aligned_name = name then max best alignment else best
+       )
+      Allocator.page_size alignment_requests
+  in
+  List.map (fun name -> (name, alignment_for name)) virtual_names
+
+type allocation_layout =
+  { code_allocator : Allocator.t;
+    code_blocks : int list;
+    alloc_data : alignment:int -> int;
+    table_allocator : Allocator.t option;
+    table_blocks : int list
+  }
+
+let make_linear_allocation sections =
+  let allocator = Allocator.make ~reserved:(reserved_section_addrs sections) () in
+  { code_allocator = allocator;
+    code_blocks = [];
+    alloc_data =
+      (fun ~alignment ->
+        Allocator.alloc_aligned allocator ~size:Allocator.page_size ~alignment
+      );
+    table_allocator = None;
+    table_blocks = []
+  }
+
+let mapping_table_addr = function
+  | Page_table_ast.Mapping {target = Page_table_ast.Table addr; _}
+   |Page_table_ast.MaybeMapping {target = Page_table_ast.Table addr; _} ->
+      Some addr
+  | _ -> None
+
+let fixed_code_pages stmts =
+  let to_int addr =
+    try Z.to_int addr
+    with Z.Overflow ->
+      eval_error Page_table_setup "page_table: code address is out of range"
+  in
+  let rec collect = function
+    | [] -> []
+    | Page_table_ast.IdentityMapping {addr; attr = Page_table_ast.Code} :: stmts
+      ->
+        to_int addr :: collect stmts
+    | _ :: stmts -> collect stmts
+  in
+  collect stmts |> List.sort_uniq Int.compare
+
+let fixed_table_pages stmts =
+  List.filter_map mapping_table_addr stmts
+  |> List.map (fun addr ->
+    try Z.to_int addr
+    with Z.Overflow ->
+      eval_error Page_table_setup "page_table: table address is out of range"
+  )
+
+let required_code_pages ir =
+  List.length ir.Ir.threads
+  + List.length (List.filter (fun sec -> sec.Ir.address = None) ir.Ir.sections)
+
+let make_regional_allocation ir =
+  let occupied_code_pages = reserved_section_addrs ir.Ir.sections in
+  let code_arena_addrs =
+    occupied_code_pages @ fixed_code_pages ir.Ir.page_table_setup
+    |> List.sort_uniq Int.compare
+  in
+  let fixed_pgt_pages = fixed_table_pages ir.Ir.page_table_setup in
+  let code_blocks = unique_blocks code_arena_addrs in
+  let table_blocks = unique_blocks fixed_pgt_pages in
+  let overlap =
+    List.filter (fun block -> List.mem block table_blocks) code_blocks
+  in
+  if overlap <> [] then
+    eval_error Page_table_setup
+      "page_table: code and page-table storage share 2MB block 0x%x"
+      (List.hd overlap);
+  let fixed_blocks = code_blocks @ table_blocks in
+  let l1_size = 1 lsl 30 in
+  let l1_base =
+    match fixed_blocks with [] -> 0 | block :: _ -> block_base l1_size block
+  in
+  List.iter
+    (fun block ->
+       if block_base l1_size block <> l1_base then
+         eval_error Page_table_setup
+           "page_table: fixed storage addresses span multiple 1GB regions"
+     )
+    fixed_blocks;
+  let arena_allocator =
+    Allocator.make_in_regions ~reserved:fixed_blocks
+      [Allocator.{base = l1_base; size = l1_size}]
+  in
+  let reserved_code_pages = 0 :: occupied_code_pages in
+  let reserved_code_page_count =
+    List.filter
+      (fun addr -> List.mem (block_base Allocator.big_size addr) code_blocks)
+      reserved_code_pages
+    |> List.map (block_base Allocator.page_size)
+    |> List.sort_uniq Int.compare |> List.length
+  in
+  let rec add_code_blocks blocks =
+    let capacity =
+      (List.length blocks * (Allocator.big_size / Allocator.page_size))
+      - reserved_code_page_count
+    in
+    if capacity >= required_code_pages ir && blocks <> [] then blocks
+    else add_code_blocks (blocks @ [Allocator.alloc_big arena_allocator])
+  in
+  let code_blocks = add_code_blocks code_blocks in
+  let code_allocator =
+    Allocator.make_in_regions ~reserved:reserved_code_pages
+      (regions_of_blocks code_blocks)
+  in
+  let regular_data_block = Allocator.alloc_big arena_allocator in
+  let data_allocator =
+    Allocator.make_in_regions ~reserved:[0]
+      (regions_of_blocks [regular_data_block])
+  in
+  let alloc_data ~alignment =
+    if alignment >= Allocator.big_size then
+      Allocator.alloc_aligned arena_allocator ~size:Allocator.big_size ~alignment
+    else
+      Allocator.alloc_aligned data_allocator ~size:Allocator.page_size ~alignment
+  in
+  let table_blocks =
+    match table_blocks with
+    | [] -> [Allocator.alloc_big arena_allocator]
+    | blocks -> blocks
+  in
+  let table_allocator =
+    Allocator.make_in_regions ~reserved:fixed_pgt_pages
+      (regions_of_blocks table_blocks)
+  in
+  { code_allocator;
+    code_blocks;
+    alloc_data;
+    table_allocator = Some table_allocator;
+    table_blocks
+  }
+
 (* Build assembly input after assigning concrete addresses to every section and
    symbolic location. *)
-let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
+let to_assembly_input allocation (ir : Ir.t) : Assembler.assembly_input =
   let code_sections =
     List.mapi
       (fun i (thread : Ir.thread) ->
          { Assembler.name = thread_section_name i;
            code = thread.code;
-           addr = Allocator.alloc_page allocator
+           addr = Allocator.alloc_page allocation.code_allocator
          }
        )
       ir.threads
@@ -160,7 +351,7 @@ let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
          let addr =
            match sec.address with
            | Some addr -> addr
-           | None -> Allocator.alloc_page allocator
+           | None -> Allocator.alloc_page allocation.code_allocator
          in
          {Assembler.name = sec.sec_name; code = sec.code; addr}
        )
@@ -168,11 +359,11 @@ let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
   in
   let symbols =
     List.map
-      (fun sym ->
-         let addr = Allocator.alloc_page allocator in
-         {Assembler.name = sym; addr}
+      (fun (name, alignment) ->
+         let addr = allocation.alloc_data ~alignment in
+         {Assembler.name; addr}
        )
-      (symbolic_names ir)
+      (symbolic_va_alignments ir)
   in
   {Assembler.sections = code_sections @ named_sections; symbols}
 
@@ -187,6 +378,7 @@ let find_section name (asm_result : Assembler.assembly_result) =
 let build_registers
       ~arch
       ?page_table_entries
+      ?page_table_pages
       ?page_table_root
       ~lookup_addr
       ~pc
@@ -200,7 +392,9 @@ let build_registers
          let context = Register_init (thread.tid, reg) in
          let gen =
            RegValGen.Number
-             (eval_term ?page_table_entries ~context ~lookup_addr value)
+             (eval_term ?page_table_entries ?page_table_pages ~context
+                ~lookup_addr value
+             )
          in
          (reg, normalize_register_gen ~arch ~context reg gen)
        )
@@ -224,6 +418,7 @@ let build_registers
 let build_threads
       ~arch
       ?page_table_entries
+      ?page_table_pages
       ?page_table_root
       ~lookup_addr
       asm_result
@@ -234,14 +429,16 @@ let build_threads
     (fun tid (thread : Ir.thread) ->
        let sec = find_section (thread_section_name tid) asm_result in
        let regs =
-         build_registers ~arch ?page_table_entries ?page_table_root ~lookup_addr
-           ~pc sec.addr thread
+         build_registers ~arch ?page_table_entries ?page_table_pages
+           ?page_table_root ~lookup_addr ~pc sec.addr thread
        in
        let breakpoints =
          let context = Breakpoints tid in
          Z.of_int (sec.addr + Bytes.length sec.data)
          :: List.map
-              (eval_term ?page_table_entries ~context ~lookup_addr)
+              (eval_term ?page_table_entries ?page_table_pages ~context
+                 ~lookup_addr
+              )
               thread.breakpoints
        in
        {Testrepr.regs; breakpoints}
@@ -250,9 +447,8 @@ let build_threads
 
 (** {2 Page table setup construction} *)
 
-(* Build the page-table layout from concrete section/symbol VAs.
-   Thread code pages are included so the DSL can request code mappings. *)
-let build_page_table_setup ir allocator asm_result =
+(* Build the page-table layout from concrete section/symbol VAs. *)
+let build_page_table_setup ir allocation asm_result =
   match ir.Ir.page_table_setup with
   | [] -> None
   | page_table_setup -> (
@@ -260,18 +456,16 @@ let build_page_table_setup ir allocator asm_result =
         eval_error Page_table_setup
           "page_table: [locations] is not supported with page_table_setup";
       let symbolic_vas = asm_result.Assembler.symbols in
-      let code_pages =
-        List.map
-          (fun (thread : Ir.thread) ->
-             let sec = find_section (thread_section_name thread.tid) asm_result in
-             sec.addr
-           )
-          ir.Ir.threads
-      in
       try
         Some
-          (Page_table_builder.build ~arch:ir.arch ~allocator ~symbolic_vas
-             ~code_pages page_table_setup
+          ( match allocation.table_allocator with
+          | None -> assert false
+          | Some table_allocator ->
+              Page_table_builder.build ~arch:ir.arch
+                ~alloc_data:allocation.alloc_data ~table_allocator
+                ~code_blocks:allocation.code_blocks
+                ~table_blocks:allocation.table_blocks ~symbolic_vas
+                page_table_setup
           )
       with Page_table_builder.Error msg -> eval_error Page_table_setup "%s" msg
     )
@@ -402,21 +596,27 @@ let build_memory
 
 let to_testrepr ~filename (ir : Ir.t) : Testrepr.t =
   let default_mem_size = default_memory_size () in
-  let reserved_addrs = reserved_section_addrs ir.sections in
-  let allocator = Allocator.make ~reserved:reserved_addrs () in
-  let asm_input = to_assembly_input allocator ir in
+  let allocation =
+    match ir.page_table_setup with
+    | [] -> make_linear_allocation ir.sections
+    | _ -> make_regional_allocation ir
+  in
+  let asm_input = to_assembly_input allocation ir in
   let asm_result = Assembler.assemble ~filename asm_input in
-  let page_table = build_page_table_setup ir allocator asm_result in
+  let page_table = build_page_table_setup ir allocation asm_result in
   let page_table_entries =
     Option.map (fun layout -> layout.Page_table_builder.table_entries) page_table
+  in
+  let page_table_pages =
+    Option.map (fun layout -> layout.Page_table_builder.table_pages) page_table
   in
   let lookup_addr = build_lookup_addr asm_result page_table in
   let page_table_root =
     Option.map (fun layout -> layout.Page_table_builder.root) page_table
   in
   let threads =
-    build_threads ~arch:ir.arch ?page_table_entries ?page_table_root ~lookup_addr
-      asm_result ir.threads
+    build_threads ~arch:ir.arch ?page_table_entries ?page_table_pages
+      ?page_table_root ~lookup_addr asm_result ir.threads
   in
   let memory =
     build_memory ~default_mem_size ~symbol_sizes:ir.sizes
@@ -430,6 +630,8 @@ let to_testrepr ~filename (ir : Ir.t) : Testrepr.t =
     kind = ir.kind;
     final =
       Assertion.map_cst
-        (eval_term ?page_table_entries ~context:Final_assertion ~lookup_addr)
+        (eval_term ?page_table_entries ?page_table_pages ~context:Final_assertion
+           ~lookup_addr
+        )
         ir.assertion
   }

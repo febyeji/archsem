@@ -189,7 +189,7 @@ Page table DSL rejects duplicate VA mappings
   $ archsem seq conflicting-page-table-mapping.litmus.toml
   archsem: eval error:
   File "conflicting-page-table-mapping.litmus.toml", path "page_table_setup":
-  page_table: conflicting mapping for VA 0x2000: existing descriptor 0x400443, new descriptor 0x401443
+  page_table: conflicting mapping for VA 0x200000: existing descriptor 0x201443, new descriptor 0x202443
   [1]
 
 Page table DSL rejects locations with page tables

@@ -1,12 +1,12 @@
 arch = "Arm"
-name = "Alias+VM"
+name = "LDR+size+VM"
 
 [[memory]]
   sym = "__thread0"
   kind = "code"
   addr = 0x1000
   step = 4
-  data = [0xf9000020, 0xf9400043]
+  data = 0xb9400820
 
 [[memory]]
   kind = "pagetable"
@@ -28,47 +28,41 @@ name = "Alias+VM"
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x402008
-  step = 8
-  data = 0x403003
-
-[[memory]]
-  kind = "pagetable"
   addr = 0x402010
   step = 8
   data = 0x400441
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x403000
+  addr = 0x402018
   step = 8
-  data = 0x203443
+  data = 0x800441
 
 [[memory]]
-  kind = "pagetable"
-  addr = 0x403008
+  sym = "pa_pad"
+  addr = 0x201000
   step = 8
-  data = 0x203443
+  data = 0
 
 [[memory]]
   sym = "pa_x"
-  addr = 0x203000
-  step = 8
-  data = 0
+  addr = 0x800000
+  step = 12
+  data = 0x10000000100000001
 
 [thread]
 
 [thread."0"]
-  breakpoints = [0x1008]
+  breakpoints = [0x1004]
 
 [thread."0".regs]
   _PC = 0x1000
-  "R0" = 1
-  "R1" = 0x200000
-  "R2" = 0x201000
-  "TTBR0_EL1" = 0x400000
+  "R1" = 0x600000
+  "R2" = 0x200000
   "SCTLR_EL1" = 1
   CurrentEL = 1
+  "TTBR0_EL1" = 0x400000
+  "R0" = 0
   "R3" = 0
   "R4" = 0
   "R5" = 0
@@ -104,4 +98,4 @@ name = "Alias+VM"
   DAIF = 0
 
 [final]
-  assertion = {"0:X3" = 1}
+  assertion = {and = [{"0:X0" = 1}, {"0:X2" = 0x200000}, {pa_x = 0x10000000100000001}]}

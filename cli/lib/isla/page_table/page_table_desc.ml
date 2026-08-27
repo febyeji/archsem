@@ -153,7 +153,7 @@ let table_addr_of_descriptor desc =
 let is_valid desc = Int64.logand desc 0x1L <> 0L
 
 (** For a non-level 3 block entry, bit 1 is 0 *)
-let is_block desc = Int64.logand desc 0b10L == 0L
+let is_block desc = Int64.logand desc 0b10L = 0L
 
 (** Decide if an entry is a table entry*)
 let is_table level desc = level != last_level && not (is_block desc)

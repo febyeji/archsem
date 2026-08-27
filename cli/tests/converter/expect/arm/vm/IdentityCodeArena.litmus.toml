@@ -1,12 +1,12 @@
 arch = "Arm"
-name = "STR+32"
+name = "IdentityCodeArena"
 
 [[memory]]
   sym = "__thread0"
   kind = "code"
-  addr = 0x1000
+  addr = 0x400000
   step = 4
-  data = 0xb9400820
+  data = 0xf9400020
 
 [[memory]]
   kind = "pagetable"
@@ -34,30 +34,30 @@ name = "STR+32"
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203008
+  addr = 0x202010
   step = 8
-  data = 0x14c3
+  data = 0x4004c1
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203010
+  addr = 0x203008
   step = 8
-  data = 0x400443
+  data = 0x2443
 
 [[memory]]
   sym = "pa_x"
-  addr = 0x400000
-  step = 12
-  data = 0x10000000100000001
+  addr = 0x2000
+  step = 8
+  data = 0
 
 [thread]
 
 [thread."0"]
-  breakpoints = [0x1004]
+  breakpoints = [0x400004]
 
 [thread."0".regs]
-  _PC = 0x1000
-  "R1" = 0x2000
+  _PC = 0x400000
+  "R1" = 0x1000
   "SCTLR_EL1" = 1
   CurrentEL = 1
   "TTBR0_EL1" = 0x200000
@@ -98,4 +98,4 @@ name = "STR+32"
   DAIF = 0
 
 [final]
-  assertion = {and = [{"0:X0" = 1}, {pa_x = 0x10000000100000001}]}
+  assertion = {"0:X0" = 0}

@@ -1,0 +1,18 @@
+arch = "AArch64"
+name = "IdentityCodeArena"
+symbolic = ["x"]
+
+page_table_setup = """
+identity 0x400000 with code;
+x |-> pa_x;
+"""
+
+[thread.0]
+init = { X1 = "x", SCTLR_EL1 = 1, CurrentEL = 1 }
+code = """
+    LDR X0, [X1]
+"""
+
+[final]
+expect = "sat"
+assertion = "0:X0 = 0"

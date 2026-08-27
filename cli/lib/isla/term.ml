@@ -48,9 +48,10 @@ type t =
 
 let zero = Const Z.zero
 
-let eval ?page_table_entries ~lookup_addr term =
+let eval ?page_table_entries ?page_table_pages ~lookup_addr term =
   let positional_functions =
-    Bv_fns.functions @ Page_table_fns.positional_functions ?page_table_entries ()
+    Bv_fns.functions
+    @ Page_table_fns.positional_functions ?page_table_entries ?page_table_pages ()
   in
   let keyword_functions = Page_table_fns.keyword_functions in
   let rec eval_term = function

@@ -10,43 +10,43 @@ name = "Inval+LDR"
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x200000
+  addr = 0x400000
   step = 8
-  data = 0x201003
+  data = 0x401003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x201000
+  addr = 0x401000
   step = 8
-  data = 0x202003
+  data = 0x402003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x202000
+  addr = 0x402000
   step = 8
-  data = 0x203003
+  data = 0x4c1
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x202008
+  addr = 0x402008
   step = 8
-  data = 0x200441
+  data = 0x403003
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203008
+  addr = 0x402010
   step = 8
-  data = 0x14c3
+  data = 0x400441
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203010
+  addr = 0x403000
   step = 8
-  data = 0x400443
+  data = 0x202443
 
 [[memory]]
   sym = "pa_x"
-  addr = 0x400000
+  addr = 0x202000
   step = 8
   data = 3
 
@@ -58,15 +58,15 @@ name = "Inval+LDR"
 [thread."0".regs]
   _PC = 0x1000
   "R0" = 0
-  "R1" = 0x203010
-  "R2" = 0x2000
+  "R1" = 0x403000
+  "R2" = 0x200000
   "VBAR_EL1" = 0x4242000
   "SCTLR_EL1" = 1
   "ESR_EL1" = 0
   "ELR_EL1" = 0
   "FAR_EL1" = 0
   "SPSR_EL1" = 0
-  "TTBR0_EL1" = 0x200000
+  "TTBR0_EL1" = 0x400000
   "R3" = 0
   "R4" = 0
   "R5" = 0
@@ -103,4 +103,4 @@ name = "Inval+LDR"
   DAIF = 0
 
 [final]
-  assertion = {or = [{and = [{"0:PC" = 0x100c}, {"0:X3" = 3}]}, {and = [{"0:PC" = 0x4242400}, {"0:ELR_EL1" = 0x1008}, {"0:FAR_EL1" = 0x2000}, {"0:ESR_EL1" = 0x92000007}]}]}
+  assertion = {or = [{and = [{"0:PC" = 0x100c}, {"0:X3" = 3}]}, {and = [{"0:PC" = 0x4242400}, {"0:ELR_EL1" = 0x1008}, {"0:FAR_EL1" = 0x200000}, {"0:ESR_EL1" = 0x92000007}]}]}

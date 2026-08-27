@@ -38,58 +38,64 @@
 (*                                                                            *)
 (******************************************************************************)
 
-(** Page-table setup AST.
+(** Unit tests for Isla.Page_table_builder. *)
 
-    VA-side names may be declared with [virtual] or the TOML [symbolic] list.
-    [aligned ... virtual ...] statements constrain those VA-side names. PA-side
-    names may be declared with [physical], or allocated on first use by
-    mapping/data-init statements. *)
-type attr =
-  | Code
-  | Data
+open OUnit2
 
-type descriptor_field =
-  { name : string;
-    value : Z.t
-  }
+let make_layout stmts =
+  let data_allocator = Isla.Allocator.make ~base:0x400000 () in
+  let table_allocator =
+    Isla.Allocator.make_in_regions
+      [Isla.Allocator.{base = 0x200000; size = Isla.Allocator.big_size}]
+  in
+  Isla.Page_table_builder.build ~arch:Litmus.Arch_id.Arm
+    ~alloc_data:(fun ~alignment ->
+      Isla.Allocator.alloc_aligned data_allocator ~size:Isla.Allocator.page_size
+        ~alignment
+    )
+    ~table_allocator ~code_blocks:[0] ~table_blocks:[0x200000]
+    ~symbolic_vas:[("x", 0x600000)]
+    stmts
 
-type mapping_target =
-  | PaName of string
-  | Invalid
-  | Table of Z.t
+let test_materialize_physical_declaration _ =
+  let layout = make_layout [Isla.Page_table_ast.Physical ["pa_unused"]] in
+  assert_bool "physical-only symbol is allocated"
+    (List.mem_assoc "pa_unused" layout.phys_symbols_pa)
 
-type stmt =
-  (* [virtual x y;] predeclares VA-side names. *)
-  | Virtual of string list
-  (* [physical pa_x pa_y;] predeclares PA-side names. *)
-  | Physical of string list
-  (* [aligned 2097152 virtual x y;] constrains VA-side names. *)
-  | AlignedVirtual of
-      { alignment : Z.t;
-        names : string list
-      }
-  (* [x |-> pa_x;] maps an existing symbolic VA to a PA-side target.
-     Optional [with ... and default] clauses override descriptor fields. *)
-  | Mapping of
-      { va_name : string;
-        target : mapping_target;
-        attrs : descriptor_field list;
-        level : int option
-      }
-  (* [x ?-> pa_x;] is accepted for Isla compatibility, but ignored entirely. *)
-  | MaybeMapping of
-      { va_name : string;
-        target : mapping_target;
-        attrs : descriptor_field list;
-        level : int option
-      }
-  (* [*pa_x = value;] initialises data at a PA-side name. *)
-  | DataInit of
-      { pa_name : string;
-        value : Z.t
-      }
-  (* [identity addr with attr;] maps one page to itself. *)
-  | IdentityMapping of
-      { addr : Z.t;
-        attr : attr
-      }
+let test_mapping_alignment_is_known_before_data_init _ =
+  let layout =
+    make_layout
+      [ Isla.Page_table_ast.DataInit {pa_name = "pa_pad"; value = Z.zero};
+        Isla.Page_table_ast.DataInit {pa_name = "pa_x"; value = Z.one};
+        Isla.Page_table_ast.Mapping
+          { va_name = "x";
+            target = Isla.Page_table_ast.PaName "pa_x";
+            level = Some 2;
+            attrs = []
+          }
+      ]
+  in
+  let pa_x = List.assoc "pa_x" layout.phys_symbols_pa in
+  assert_equal 0 (pa_x mod Isla.Allocator.big_size)
+
+let test_code_identity_inside_reserved_block_is_already_satisfied _ =
+  let layout =
+    make_layout
+      [ Isla.Page_table_ast.IdentityMapping
+          {addr = Z.of_int 0x1000; attr = Isla.Page_table_ast.Code}
+      ]
+  in
+  assert_equal (Some 0x1400)
+    (Isla.Page_table_builder.translate_va_to_pa layout 0x1400)
+
+let tests =
+  "Isla.Page_table_builder"
+  >::: [ "materialize physical declaration"
+         >:: test_materialize_physical_declaration;
+         "mapping alignment is known before data init"
+         >:: test_mapping_alignment_is_known_before_data_init;
+         "code identity inside reserved block is already satisfied"
+         >:: test_code_identity_inside_reserved_block_is_already_satisfied
+       ]
+
+let () = run_test_tt_main tests

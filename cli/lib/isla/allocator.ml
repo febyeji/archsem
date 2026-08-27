@@ -38,9 +38,23 @@
 (*                                                                            *)
 (******************************************************************************)
 
-(** Page-oriented address allocator. *)
+(** Region-scoped address allocator. *)
 
-type t = {mutable current : int}
+type region =
+  { base : int;
+    size : int
+  }
+
+type bounds =
+  { base : int;
+    limit : int option
+  }
+
+type t =
+  { mutable regions : bounds list;
+    mutable current : int;
+    reserved_pages : int list
+  }
 
 let default_base = 0x1000
 
@@ -50,24 +64,93 @@ let big_size = 1 lsl 21
 
 let align_up addr alignment =
   if alignment <= 0 then
-    Litmus.Error.fatal "allocator: alignment must be positive";
+    Litmus.Error.failwith "allocator: alignment must be positive";
   let rem = addr mod alignment in
-  if rem = 0 then addr else addr + alignment - rem
+  if rem = 0 then addr
+  else
+    let delta = alignment - rem in
+    if addr > max_int - delta then
+      Litmus.Error.failwith "allocator: address overflow"
+    else addr + delta
 
 let page_after addr = align_up (addr + 1) page_size
 
-let make ?(base = default_base) ?(reserved = []) () =
-  let current =
-    List.fold_left
-      (fun current addr -> max current (page_after addr))
-      base reserved
-  in
-  {current}
+let reserved_pages reserved =
+  List.map (fun addr -> addr - (addr mod page_size)) reserved
+  |> List.sort_uniq Int.compare
 
-let alloc_aligned allocator ~size ~alignment =
-  let addr = align_up allocator.current alignment in
-  allocator.current <- addr + size;
-  addr
+let make ?(base = default_base) ?(reserved = []) () =
+  if base < 0 then Litmus.Error.failwith "allocator: base must be non-negative";
+  { regions = [{base; limit = None}];
+    current = base;
+    reserved_pages = reserved_pages reserved
+  }
+
+let checked_bound {base; size} =
+  if base < 0 then
+    Litmus.Error.failwith "allocator: region base must be non-negative";
+  if size <= 0 then
+    Litmus.Error.failwith "allocator: region size must be positive";
+  if base > max_int - size then
+    Litmus.Error.failwith "allocator: region overflows";
+  {base; limit = Some (base + size)}
+
+let check_non_overlapping regions =
+  let rec check = function
+    | [] | [_] -> ()
+    | {limit = Some limit; _} :: ({base; _} :: _ as rest) ->
+        if limit > base then Litmus.Error.failwith "allocator: regions overlap";
+        check rest
+    | _ -> assert false
+  in
+  check regions
+
+let make_in_regions ?(reserved = []) regions =
+  let regions =
+    List.map checked_bound regions
+    |> List.sort (fun a b -> Int.compare a.base b.base)
+  in
+  if regions = [] then Litmus.Error.failwith "allocator: no regions provided";
+  check_non_overlapping regions;
+  { regions;
+    current = (List.hd regions).base;
+    reserved_pages = reserved_pages reserved
+  }
+
+let overlapping_reserved_page allocator start stop =
+  List.find_opt
+    (fun page -> page < stop && page + page_size > start)
+    allocator.reserved_pages
+
+let fits limit addr size =
+  addr <= max_int - size
+  && match limit with None -> true | Some limit -> addr <= limit - size
+
+let rec alloc_aligned allocator ~size ~alignment =
+  if size <= 0 then Litmus.Error.failwith "allocator: size must be positive";
+  match allocator.regions with
+  | [] -> Litmus.Error.failwith "allocator: regions exhausted"
+  | region :: remaining -> (
+      let current = max allocator.current region.base in
+      let addr = align_up current alignment in
+      if not (fits region.limit addr size) then (
+        allocator.regions <- remaining;
+        match remaining with
+        | [] -> alloc_aligned allocator ~size ~alignment
+        | next :: _ ->
+            allocator.current <- next.base;
+            alloc_aligned allocator ~size ~alignment
+      )
+      else
+        let stop = addr + size in
+        match overlapping_reserved_page allocator addr stop with
+        | Some page ->
+            allocator.current <- page_after page;
+            alloc_aligned allocator ~size ~alignment
+        | None ->
+            allocator.current <- stop;
+            addr
+    )
 
 let alloc_page allocator =
   alloc_aligned allocator ~size:page_size ~alignment:page_size

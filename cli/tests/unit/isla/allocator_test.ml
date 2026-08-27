@@ -26,70 +26,66 @@
 (*                                                                            *)
 (*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS       *)
 (*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT         *)
-(*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS         *)
-(*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE            *)
-(*  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,      *)
-(*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,      *)
-(*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS     *)
-(*  OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND    *)
-(*  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR     *)
-(*  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE    *)
-(*  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.  *)
+(*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A   *)
+(*  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER  *)
+(*  OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,   *)
+(*  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,        *)
+(*  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR         *)
+(*  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF     *)
+(*  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING       *)
+(*  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS         *)
+(*  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.              *)
 (*                                                                            *)
 (******************************************************************************)
 
-(** Page-table setup AST.
+open OUnit2
+open Isla
 
-    VA-side names may be declared with [virtual] or the TOML [symbolic] list.
-    [aligned ... virtual ...] statements constrain those VA-side names. PA-side
-    names may be declared with [physical], or allocated on first use by
-    mapping/data-init statements. *)
-type attr =
-  | Code
-  | Data
+let int = string_of_int
 
-type descriptor_field =
-  { name : string;
-    value : Z.t
-  }
+let test_regions_are_scoped _ =
+  let allocator =
+    Allocator.make_in_regions
+      [ {base = 0x200000; size = Allocator.big_size};
+        {base = 0x600000; size = Allocator.big_size}
+      ]
+  in
+  assert_equal ~printer:int 0x200000 (Allocator.alloc_page allocator);
+  for _ = 1 to 511 do
+    ignore (Allocator.alloc_page allocator)
+  done;
+  assert_equal ~printer:int 0x600000 (Allocator.alloc_page allocator)
 
-type mapping_target =
-  | PaName of string
-  | Invalid
-  | Table of Z.t
+let test_reserved_page_is_skipped _ =
+  let allocator =
+    Allocator.make_in_regions ~reserved:[0x201234]
+      [{base = 0x200000; size = Allocator.big_size}]
+  in
+  assert_equal ~printer:int 0x200000 (Allocator.alloc_page allocator);
+  assert_equal ~printer:int 0x202000 (Allocator.alloc_page allocator)
 
-type stmt =
-  (* [virtual x y;] predeclares VA-side names. *)
-  | Virtual of string list
-  (* [physical pa_x pa_y;] predeclares PA-side names. *)
-  | Physical of string list
-  (* [aligned 2097152 virtual x y;] constrains VA-side names. *)
-  | AlignedVirtual of
-      { alignment : Z.t;
-        names : string list
-      }
-  (* [x |-> pa_x;] maps an existing symbolic VA to a PA-side target.
-     Optional [with ... and default] clauses override descriptor fields. *)
-  | Mapping of
-      { va_name : string;
-        target : mapping_target;
-        attrs : descriptor_field list;
-        level : int option
-      }
-  (* [x ?-> pa_x;] is accepted for Isla compatibility, but ignored entirely. *)
-  | MaybeMapping of
-      { va_name : string;
-        target : mapping_target;
-        attrs : descriptor_field list;
-        level : int option
-      }
-  (* [*pa_x = value;] initialises data at a PA-side name. *)
-  | DataInit of
-      { pa_name : string;
-        value : Z.t
-      }
-  (* [identity addr with attr;] maps one page to itself. *)
-  | IdentityMapping of
-      { addr : Z.t;
-        attr : attr
-      }
+let test_big_allocation_skips_reserved_block _ =
+  let allocator =
+    Allocator.make_in_regions ~reserved:[0x1400] [{base = 0; size = 1 lsl 30}]
+  in
+  assert_equal ~printer:int 0x200000 (Allocator.alloc_big allocator)
+
+let test_regions_exhaust _ =
+  let allocator =
+    Allocator.make_in_regions [{base = 0x4000; size = Allocator.page_size}]
+  in
+  ignore (Allocator.alloc_page allocator);
+  assert_raises (Failure "allocator: regions exhausted") (fun () ->
+    ignore (Allocator.alloc_page allocator)
+  )
+
+let tests =
+  "Isla.Allocator"
+  >::: [ "regions are scoped" >:: test_regions_are_scoped;
+         "reserved page is skipped" >:: test_reserved_page_is_skipped;
+         "big allocation skips reserved block"
+         >:: test_big_allocation_skips_reserved_block;
+         "regions exhaust" >:: test_regions_exhaust
+       ]
+
+let () = run_test_tt_main tests

@@ -38,9 +38,14 @@
 (*                                                                            *)
 (******************************************************************************)
 
-(** Page-oriented address allocator. *)
+(** Region-scoped address allocator. *)
 
 type t
+
+type region =
+  { base : int;
+    size : int
+  }
 
 (** Size of one page allocated by [alloc_page]. *)
 val page_size : int
@@ -51,6 +56,13 @@ val big_size : int
 (** Make an allocator, optionally with reserved addresses. Each reserved
     address blocks the page containing it. *)
 val make : ?base:int -> ?reserved:int list -> unit -> t
+
+(** Make an allocator restricted to the supplied non-overlapping regions.
+    Reserved addresses block their containing 4KB pages. *)
+val make_in_regions : ?reserved:int list -> region list -> t
+
+(** Allocate [size] bytes at an address aligned to [alignment]. *)
+val alloc_aligned : t -> size:int -> alignment:int -> int
 
 (** Allocate one 4KB page. *)
 val alloc_page : t -> int
