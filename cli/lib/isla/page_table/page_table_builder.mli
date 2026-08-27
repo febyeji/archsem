@@ -67,11 +67,16 @@ exception Error of string
 (** Build a concrete page-table layout from parsed setup. *)
 val build :
    arch:Litmus.Arch_id.t ->
-  allocator:Allocator.t ->
+  (* Allocate PA-side symbols. *)
+  symbol_allocator:Allocator.t ->
+  (* Allocate root and child translation-table pages. *)
+  table_allocator:Allocator.t ->
+  (* Base addresses of 2MB code regions. *)
+  code_blocks:va list ->
+  (* Base addresses of 2MB translation-table storage regions. *)
+  table_blocks:pa list ->
   (* Maps VA-side symbol names to concrete VAs for explicit mappings *)
   symbolic_vas:(string * va) list ->
-  (* Lists built-in thread code pages that should get identity mappings *)
-  code_pages:va list ->
   (* Parsed [page_table_setup] statement list *)
   Page_table_ast.stmt list ->
   layout

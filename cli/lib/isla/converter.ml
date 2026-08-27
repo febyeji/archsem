@@ -132,6 +132,13 @@ let reserved_section_addrs sections =
 
 let thread_section_name tid = Printf.sprintf "__thread%d" tid
 
+let block_base size addr = addr - (addr mod size)
+
+let in_block block addr = block_base Allocator.big_size addr = block
+
+let unique_blocks addrs =
+  List.map (block_base Allocator.big_size) addrs |> List.sort_uniq Int.compare
+
 let symbolic_names ir =
   let add names name = if List.mem name names then names else names @ [name] in
   List.fold_left
@@ -153,6 +160,11 @@ let checked_virtual_alignment alignment =
       alignment;
   alignment
 
+let checked_mapping_alignment level =
+  try Page_table_desc.level_size level
+  with Invalid_argument _ ->
+    eval_error Page_table_setup "page_table: invalid mapping level: %d" level
+
 let symbolic_va_alignments ir =
   let virtual_names = symbolic_names ir in
   let alignment_requests =
@@ -168,6 +180,8 @@ let symbolic_va_alignments ir =
                )
               names;
             List.map (fun name -> (name, alignment)) names
+        | Page_table_ast.Mapping {va_name; level = Some level; _} ->
+            [(va_name, checked_mapping_alignment level)]
         | _ -> []
         )
       ir.Ir.page_table_setup
@@ -181,15 +195,33 @@ let symbolic_va_alignments ir =
   in
   List.map (fun name -> (name, alignment_for name)) virtual_names
 
+let fixed_table_blocks stmts =
+  List.filter_map
+    (function
+      | Page_table_ast.Mapping {target = Page_table_ast.Table addr; _} -> (
+        try Some (Z.to_int addr)
+        with Z.Overflow ->
+          eval_error Page_table_setup "page_table: table address is out of range"
+      )
+      | _ -> None
+      )
+    stmts
+  |> unique_blocks
+
+let make_arena ?(reserved = []) base =
+  Allocator.make ~base ~limit:(base + Allocator.big_size) ~reserved ()
+
 (* Build assembly input after assigning concrete addresses to every section and
    symbolic location. *)
-let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
+let to_assembly_input ~code_allocator ~symbol_allocator (ir : Ir.t) :
+  Assembler.assembly_input
+  =
   let code_sections =
     List.mapi
       (fun i (thread : Ir.thread) ->
          { Assembler.name = thread_section_name i;
            code = thread.code;
-           addr = Allocator.alloc_page allocator
+           addr = Allocator.alloc_page code_allocator
          }
        )
       ir.threads
@@ -200,7 +232,7 @@ let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
          let addr =
            match sec.address with
            | Some addr -> addr
-           | None -> Allocator.alloc_page allocator
+           | None -> Allocator.alloc_page code_allocator
          in
          {Assembler.name = sec.sec_name; code = sec.code; addr}
        )
@@ -210,13 +242,17 @@ let to_assembly_input allocator (ir : Ir.t) : Assembler.assembly_input =
     List.map
       (fun (name, alignment) ->
          let addr =
-           Allocator.alloc_aligned allocator ~size:Allocator.page_size ~alignment
+           Allocator.alloc_aligned symbol_allocator ~size:alignment ~alignment
          in
          {Assembler.name; addr}
        )
       (symbolic_va_alignments ir)
   in
   {Assembler.sections = code_sections @ named_sections; symbols}
+
+let assemble ~filename ~code_allocator ~symbol_allocator ir =
+  let input = to_assembly_input ~code_allocator ~symbol_allocator ir in
+  (input, Assembler.assemble ~filename input)
 
 (** {2 Thread register construction} *)
 
@@ -292,31 +328,23 @@ let build_threads
 
 (** {2 Page table setup construction} *)
 
-(* Build the page-table layout from concrete section/symbol VAs.
-   Thread code pages are included so the DSL can request code mappings. *)
-let build_page_table_setup ir allocator asm_result =
-  match ir.Ir.page_table_setup with
-  | [] -> None
-  | page_table_setup -> (
-      if ir.Ir.locations <> [] then
-        eval_error Page_table_setup
-          "page_table: [locations] is not supported with page_table_setup";
-      let symbolic_vas = asm_result.Assembler.symbols in
-      let code_pages =
-        List.map
-          (fun (thread : Ir.thread) ->
-             let sec = find_section (thread_section_name thread.tid) asm_result in
-             sec.addr
-           )
-          ir.Ir.threads
-      in
-      try
-        Some
-          (Page_table_builder.build ~arch:ir.arch ~allocator ~symbolic_vas
-             ~code_pages page_table_setup
-          )
-      with Page_table_builder.Error msg -> eval_error Page_table_setup "%s" msg
-    )
+(* Build the page-table layout from concrete section/symbol VAs. *)
+let build_page_table_setup
+      ir
+      ~symbol_allocator
+      ~table_allocator
+      ~code_blocks
+      ~table_blocks
+      asm_result
+  =
+  if ir.Ir.locations <> [] then
+    eval_error Page_table_setup
+      "page_table: [locations] is not supported with page_table_setup";
+  try
+    Page_table_builder.build ~arch:ir.arch ~symbol_allocator ~table_allocator
+      ~code_blocks ~table_blocks ~symbolic_vas:asm_result.Assembler.symbols
+      ir.page_table_setup
+  with Page_table_builder.Error msg -> eval_error Page_table_setup "%s" msg
 
 (* Terms may refer to VA-side assembly symbols and PA-side symbols created by
    page_table_setup. *)
@@ -444,11 +472,41 @@ let build_memory
 
 let to_testrepr ~filename (ir : Ir.t) : Testrepr.t =
   let default_mem_size = default_memory_size () in
-  let reserved_addrs = reserved_section_addrs ir.sections in
-  let allocator = Allocator.make ~reserved:reserved_addrs () in
-  let asm_input = to_assembly_input allocator ir in
-  let asm_result = Assembler.assemble ~filename asm_input in
-  let page_table = build_page_table_setup ir allocator asm_result in
+  let (asm_input, asm_result, page_table) =
+    match ir.page_table_setup with
+    | [] ->
+        let allocator =
+          Allocator.make ~reserved:(reserved_section_addrs ir.sections) ()
+        in
+        let (asm_input, asm_result) =
+          assemble ~filename ~code_allocator:allocator ~symbol_allocator:allocator
+            ir
+        in
+        (asm_input, asm_result, None)
+    | _ ->
+        let occupied_code_pages = reserved_section_addrs ir.sections in
+        let code_blocks = unique_blocks (0 :: occupied_code_pages) in
+        let fixed_table_blocks = fixed_table_blocks ir.page_table_setup in
+        let code_allocator =
+          Allocator.make ~limit:Allocator.big_size
+            ~reserved:(List.filter (in_block 0) occupied_code_pages)
+            ()
+        in
+        let symbol_allocator =
+          Allocator.make ~reserved:(code_blocks @ fixed_table_blocks) ()
+        in
+        let table_base = Allocator.alloc_big symbol_allocator in
+        let (asm_input, asm_result) =
+          assemble ~filename ~code_allocator ~symbol_allocator ir
+        in
+        let page_table =
+          build_page_table_setup ir ~symbol_allocator
+            ~table_allocator:(make_arena table_base) ~code_blocks
+            ~table_blocks:(table_base :: fixed_table_blocks)
+            asm_result
+        in
+        (asm_input, asm_result, Some page_table)
+  in
   let page_table_entries =
     Option.map (fun layout -> layout.Page_table_builder.table_entries) page_table
   in
