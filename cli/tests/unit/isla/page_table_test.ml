@@ -98,12 +98,20 @@ let test_mkdesc_descriptor_fields _ =
   in
   assert_equal leaf_expected (eval_binding "mkdesc3(oa=0x400000, nG=1)")
 
+let test_default_identity _ =
+  assert_equal
+    [ Isla.Page_table_ast.IdentityMapping
+        {addr = Z.of_int 0x283000; attr = Isla.Page_table_ast.Default}
+    ]
+    (parse "identity 0x283000 with default;")
+
 let tests =
   "Isla.Page_table"
   >::: [ "accept default_tables = true" >:: test_default_tables_true;
          "accept default_tables = false" >:: test_default_tables_false;
          "parse table descriptor fields" >:: test_table_mapping_descriptor_fields;
-         "evaluate mkdesc descriptor fields" >:: test_mkdesc_descriptor_fields
+         "evaluate mkdesc descriptor fields" >:: test_mkdesc_descriptor_fields;
+         "parse default identity" >:: test_default_identity
        ]
 
 let () = run_test_tt_main tests

@@ -252,6 +252,9 @@ let fixed_table_pages stmts =
     | [] -> []
     | Page_table_ast.TableBlock {base; body; _} :: stmts ->
         to_int base :: (collect body @ collect stmts)
+    | Page_table_ast.IdentityMapping {addr; attr = Page_table_ast.Default}
+      :: stmts ->
+        to_int addr :: collect stmts
     | stmt :: stmts ->
         Option.map to_int (mapping_table_addr stmt)
         |> Option.to_list

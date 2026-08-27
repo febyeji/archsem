@@ -158,6 +158,16 @@ let test_default_tables_false_rejects_top_level_mapping _ =
       )
   )
 
+let test_default_identity_uses_page_table_arena _ =
+  let layout =
+    make_layout ~reserved:[0x283000]
+      [ Isla.Page_table_ast.IdentityMapping
+          {addr = Z.of_int 0x283000; attr = Isla.Page_table_ast.Default}
+      ]
+  in
+  assert_bool "default identity page is tracked as page-table storage"
+    (List.mem 0x283000 layout.table_pages)
+
 let tests =
   "Isla.Page_table_builder"
   >::: [ "materialize physical declaration"
@@ -175,7 +185,9 @@ let tests =
          "default_tables false uses only named roots"
          >:: test_default_tables_false_uses_only_named_roots;
          "default_tables false rejects top-level mapping"
-         >:: test_default_tables_false_rejects_top_level_mapping
+         >:: test_default_tables_false_rejects_top_level_mapping;
+         "default identity uses page-table arena"
+         >:: test_default_identity_uses_page_table_arena
        ]
 
 let () = run_test_tt_main tests

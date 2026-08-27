@@ -195,6 +195,9 @@ let rec explicit_table_pages = function
    |Page_table_ast.MaybeMapping {target = Page_table_ast.Table addr; _} :: stmts
     ->
       addr_of_z "table address" addr :: explicit_table_pages stmts
+  | Page_table_ast.IdentityMapping {addr; attr = Page_table_ast.Default} :: stmts
+    ->
+      addr_of_z "table address" addr :: explicit_table_pages stmts
   | _ :: stmts -> explicit_table_pages stmts
 
 let default_tables_enabled stmts =
@@ -406,7 +409,8 @@ let rec eval_stmt builder ~symbolic_vas ~root = function
       let block = addr - (addr mod Allocator.big_size) in
       if
         (attr = Page_table_ast.Code && List.mem block builder.code_blocks)
-        || (attr = Page_table_ast.Data && List.mem block builder.table_blocks)
+        || (attr = Page_table_ast.Data || attr = Page_table_ast.Default)
+           && List.mem block builder.table_blocks
       then ()
       else add_mapping builder ~root ~va:addr ~pa:addr attr
   | Page_table_ast.TableBlock {stage; name; base = _; body} ->
