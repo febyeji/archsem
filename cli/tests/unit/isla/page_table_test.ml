@@ -110,6 +110,25 @@ let test_table_reference _ =
     [Isla.Page_table_ast.TableRef {stage = Isla.Page_table_ast.S2; name = "vm"}]
     (parse "s2table vm;")
 
+let test_ttbr_helper _ =
+  assert_equal
+    (Z.of_string "0x0002000000300000")
+    (eval_binding "ttbr(asid=0x2, base=0x300000)");
+  assert_equal
+    (Z.of_string "0x0001000000280000")
+    (eval_binding "ttbr(vmid=0x1, base=0x280000)")
+
+let test_ttbr_helper_validation _ =
+  assert_raises (Failure "function: ttbr: expected exactly one of asid or vmid")
+    (fun () -> eval_binding "ttbr(base=0x280000)" |> ignore
+  );
+  assert_raises (Failure "function: ttbr: argument asid does not fit in 16 bits")
+    (fun () -> eval_binding "ttbr(asid=0x10000, base=0x280000)" |> ignore
+  );
+  assert_raises (Failure "function: ttbr: argument base must be 4KB aligned")
+    (fun () -> eval_binding "ttbr(vmid=1, base=0x280001)" |> ignore
+  )
+
 let tests =
   "Isla.Page_table"
   >::: [ "accept default_tables = true" >:: test_default_tables_true;
@@ -117,7 +136,9 @@ let tests =
          "parse table descriptor fields" >:: test_table_mapping_descriptor_fields;
          "evaluate mkdesc descriptor fields" >:: test_mkdesc_descriptor_fields;
          "parse default identity" >:: test_default_identity;
-         "parse table reference" >:: test_table_reference
+         "parse table reference" >:: test_table_reference;
+         "evaluate ttbr helper" >:: test_ttbr_helper;
+         "validate ttbr helper" >:: test_ttbr_helper_validation
        ]
 
 let () = run_test_tt_main tests
