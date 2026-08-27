@@ -52,7 +52,8 @@ type descriptor = int64
 type data_value = Z.t
 
 type layout =
-  { root : pa;
+  { (* Implicit unnamed Stage-1 root, absent when [default_tables = false]. *)
+    default_root : pa option;
     table_entries : (pa * descriptor) list;
     (* Physical pages actually allocated to translation tables. *)
     table_pages : pa list;

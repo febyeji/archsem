@@ -18,77 +18,53 @@ name = "SwitchTTBR+VM"
   kind = "pagetable"
   addr = 0x201000
   step = 8
-  data = 0x202003
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x202000
-  step = 8
   data = 0x4c1
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x202008
+  addr = 0x201008
   step = 8
   data = 0x200441
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x203000
+  addr = 0x201010
   step = 8
   data = 0x204003
 
 [[memory]]
   kind = "pagetable"
+  addr = 0x202000
+  step = 8
+  data = 0x203003
+
+[[memory]]
+  kind = "pagetable"
+  addr = 0x203000
+  step = 8
+  data = 0x4c1
+
+[[memory]]
+  kind = "pagetable"
+  addr = 0x203008
+  step = 8
+  data = 0x200441
+
+[[memory]]
+  kind = "pagetable"
+  addr = 0x203010
+  step = 8
+  data = 0x205003
+
+[[memory]]
+  kind = "pagetable"
   addr = 0x204000
-  step = 8
-  data = 0x4c1
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x204008
-  step = 8
-  data = 0x200441
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x204010
-  step = 8
-  data = 0x207003
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x205000
-  step = 8
-  data = 0x206003
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x206000
-  step = 8
-  data = 0x4c1
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x206008
-  step = 8
-  data = 0x200441
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x206010
-  step = 8
-  data = 0x208003
-
-[[memory]]
-  kind = "pagetable"
-  addr = 0x207000
   step = 8
   data = 0x401443
 
 [[memory]]
   kind = "pagetable"
-  addr = 0x208000
+  addr = 0x205000
   step = 8
   data = 0x402443
 
@@ -96,13 +72,13 @@ name = "SwitchTTBR+VM"
   kind = "pagetable"
   addr = 0x2c0000
   step = 8
-  data = 0x203003
+  data = 0x200003
 
 [[memory]]
   kind = "pagetable"
   addr = 0x300000
   step = 8
-  data = 0x205003
+  data = 0x202003
 
 [[memory]]
   sym = "pa0"

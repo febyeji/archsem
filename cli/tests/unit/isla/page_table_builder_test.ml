@@ -129,6 +129,35 @@ let test_duplicate_named_root_is_rejected _ =
          )
   )
 
+let test_default_tables_false_uses_only_named_roots _ =
+  let layout =
+    make_layout ~reserved:[0x280000]
+      [ Isla.Page_table_ast.OptionDefaultTables false;
+        table_block Isla.Page_table_ast.S1 "only_root" 0x280000 []
+      ]
+  in
+  assert_equal None layout.default_root;
+  assert_equal 0x280000 (List.assoc "only_root" layout.table_symbols_pa)
+
+let test_default_tables_false_rejects_top_level_mapping _ =
+  assert_raises
+    (Isla.Page_table_builder.Error
+       "page_table: top-level mapping requires an implicit default table, but \
+        default_tables = false"
+    ) (fun () ->
+    ignore
+      (make_layout
+         [ Isla.Page_table_ast.OptionDefaultTables false;
+           Isla.Page_table_ast.Mapping
+             { va_name = "x";
+               target = Isla.Page_table_ast.PaName "pa_x";
+               level = None;
+               attrs = []
+             }
+         ]
+      )
+  )
+
 let tests =
   "Isla.Page_table_builder"
   >::: [ "materialize physical declaration"
@@ -142,7 +171,11 @@ let tests =
          "explicit table target keeps actual address"
          >:: test_explicit_table_target_keeps_actual_address;
          "duplicate named root is rejected"
-         >:: test_duplicate_named_root_is_rejected
+         >:: test_duplicate_named_root_is_rejected;
+         "default_tables false uses only named roots"
+         >:: test_default_tables_false_uses_only_named_roots;
+         "default_tables false rejects top-level mapping"
+         >:: test_default_tables_false_rejects_top_level_mapping
        ]
 
 let () = run_test_tt_main tests

@@ -51,7 +51,7 @@ type descriptor = int64
 type data_value = Z.t
 
 type layout =
-  { root : pa;
+  { default_root : pa option;
     table_entries : (pa * descriptor) list;
     table_pages : pa list;
     table_symbols_pa : (string * pa) list;
@@ -74,7 +74,7 @@ type t =
     table_allocator : Allocator.t;
     code_blocks : pa list;
     table_blocks : pa list;
-    default_root : table_root;
+    default_root : table_root option;
     mutable roots : table_root list;
     mutable table_pages : pa list;
     entries : (pa, descriptor) Hashtbl.t;
@@ -90,17 +90,24 @@ let make
       ~code_blocks
       ~table_blocks
       ~pa_alignments
-      ~root
+      ~default_root
       ~explicit_table_pages
   =
-  let default_root = {stage = Page_table_ast.S1; name = None; base = root} in
+  let default_root =
+    Option.map
+      (fun base -> {stage = Page_table_ast.S1; name = None; base})
+      default_root
+  in
   { alloc_data;
     table_allocator;
     code_blocks;
     table_blocks;
     default_root;
-    roots = [default_root];
-    table_pages = root :: explicit_table_pages;
+    roots = Option.to_list default_root;
+    table_pages =
+      Option.map (fun root -> root.base) default_root
+      |> Option.to_list
+      |> List.append explicit_table_pages;
     entries = Hashtbl.create 256;
     declared_pa_names_rev = [];
     pa_alignments;
@@ -189,6 +196,33 @@ let rec explicit_table_pages = function
     ->
       addr_of_z "table address" addr :: explicit_table_pages stmts
   | _ :: stmts -> explicit_table_pages stmts
+
+let default_tables_enabled stmts =
+  let rec reject_nested_options = function
+    | [] -> ()
+    | Page_table_ast.OptionDefaultTables _ :: _ ->
+        error "page_table: default_tables option must be top-level"
+    | Page_table_ast.TableBlock {body; _} :: stmts ->
+        reject_nested_options body; reject_nested_options stmts
+    | _ :: stmts -> reject_nested_options stmts
+  in
+  List.iter
+    (function
+      | Page_table_ast.TableBlock {body; _} -> reject_nested_options body
+      | _ -> ()
+      )
+    stmts;
+  let values =
+    List.filter_map
+      (function
+        | Page_table_ast.OptionDefaultTables value -> Some value | _ -> None
+        )
+      stmts
+  in
+  match values with
+  | [] -> true
+  | [value] -> value
+  | _ -> error "page_table: duplicate default_tables option"
 
 (** Allocate a fresh child translation-table page. *)
 let create_table_page builder =
@@ -343,13 +377,22 @@ let eval_mapping_target ?level ?(attrs = []) builder ~root ~va = function
       in
       write_descriptor ~level builder ~root ~va desc
 
+let require_root = function
+  | Some root -> root
+  | None ->
+      error
+        "page_table: top-level mapping requires an implicit default table, but \
+         default_tables = false"
+
 let rec eval_stmt builder ~symbolic_vas ~root = function
+  | Page_table_ast.OptionDefaultTables _ -> ()
   | Page_table_ast.Virtual _ -> ()
   | Page_table_ast.Physical names ->
       builder.declared_pa_names_rev <-
         List.rev_append names builder.declared_pa_names_rev
   | Page_table_ast.AlignedVirtual _ -> ()
   | Page_table_ast.Mapping {va_name; target; attrs; level} ->
+      let root = require_root root in
       let va =
         match List.assoc_opt va_name symbolic_vas with
         | Some addr -> addr
@@ -361,6 +404,7 @@ let rec eval_stmt builder ~symbolic_vas ~root = function
       let pa = alloc_physical builder pa_name in
       builder.data_inits <- (pa, value) :: builder.data_inits
   | Page_table_ast.IdentityMapping {addr; attr} ->
+      let root = require_root root in
       let addr = addr_of_z "address" addr in
       let block = addr - (addr mod Allocator.big_size) in
       if
@@ -370,7 +414,7 @@ let rec eval_stmt builder ~symbolic_vas ~root = function
       else add_mapping builder ~root ~va:addr ~pa:addr attr
   | Page_table_ast.TableBlock {stage; name; base = _; body} ->
       let root = find_root builder ~stage ~name in
-      List.iter (eval_stmt builder ~symbolic_vas ~root) body
+      List.iter (eval_stmt builder ~symbolic_vas ~root:(Some root)) body
 
 (** {1 Layout construction} *)
 
@@ -383,7 +427,7 @@ let to_entries builder =
 
 (** Freeze the builder state into the immutable layout used downstream. *)
 let to_layout builder =
-  let root = builder.default_root.base in
+  let default_root = Option.map (fun root -> root.base) builder.default_root in
   let table_entries = to_entries builder in
   let table_pages = List.sort_uniq Int.compare builder.table_pages in
   let table_symbols_pa =
@@ -394,7 +438,13 @@ let to_layout builder =
   in
   let data_symbols_pa = List.rev builder.data_symbols_pa in
   let data_inits = builder.data_inits in
-  {root; table_entries; table_pages; table_symbols_pa; data_symbols_pa; data_inits}
+  { default_root;
+    table_entries;
+    table_pages;
+    table_symbols_pa;
+    data_symbols_pa;
+    data_inits
+  }
 
 let build
       ~arch
@@ -407,6 +457,7 @@ let build
   =
   check_arch arch;
   if stmts = [] then error "page_table: empty page_table_setup";
+  let default_tables = default_tables_enabled stmts in
   let explicit_table_pages = explicit_table_pages stmts in
   List.iter
     (fun page ->
@@ -416,14 +467,18 @@ let build
          error "page_table: table address 0x%x is outside page-table storage" page
      )
     explicit_table_pages;
-  let root =
-    try Allocator.alloc_page table_allocator
-    with Failure msg -> error "page_table: %s" msg
+  let default_root =
+    if default_tables then
+      Some
+        ( try Allocator.alloc_page table_allocator
+          with Failure msg -> error "page_table: %s" msg
+        )
+    else None
   in
   let builder =
     make ~alloc_data ~table_allocator ~code_blocks ~table_blocks
       ~pa_alignments:(pa_alignment_requests stmts)
-      ~root ~explicit_table_pages
+      ~default_root ~explicit_table_pages
   in
   reserve_table_roots builder stmts;
   let build_table root =
@@ -469,4 +524,4 @@ let translate_va_to_pa layout va =
         Some
           (Desc.addr_of_descriptor desc + (va land Desc.level_offset_mask level))
   in
-  walk layout.root Desc.root_level
+  Option.bind layout.default_root (fun root -> walk root Desc.root_level)
