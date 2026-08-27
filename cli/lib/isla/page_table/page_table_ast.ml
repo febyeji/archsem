@@ -48,6 +48,12 @@ type attr =
   | Code
   | Data
 
+type table_stage =
+  | S1
+  (* Parsed and tracked separately, but the builder still has a TODO for the
+     Stage-2 descriptor encoding. *)
+  | S2
+
 type descriptor_field =
   { name : string;
     value : Z.t
@@ -92,4 +98,11 @@ type stmt =
   | IdentityMapping of
       { addr : Z.t;
         attr : attr
+      }
+  (* [s1table name 0x280000 { ... }] defines a root at that actual PA. *)
+  | TableBlock of
+      { stage : table_stage;
+        name : string;
+        base : Z.t;
+        body : stmt list
       }

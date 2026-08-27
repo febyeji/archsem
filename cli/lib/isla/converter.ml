@@ -144,12 +144,15 @@ let regions_of_blocks blocks =
 
 let symbolic_names ir =
   let add names name = if List.mem name names then names else names @ [name] in
-  List.fold_left
-    (fun names -> function
-       | Page_table_ast.Virtual stmt_names -> List.fold_left add names stmt_names
-       | _ -> names
-       )
-    ir.Ir.symbolic ir.Ir.page_table_setup
+  let rec collect names = function
+    | [] -> names
+    | Page_table_ast.Virtual stmt_names :: stmts ->
+        collect (List.fold_left add names stmt_names) stmts
+    | Page_table_ast.TableBlock {body; _} :: stmts ->
+        collect (collect names body) stmts
+    | _ :: stmts -> collect names stmts
+  in
+  collect ir.Ir.symbolic ir.Ir.page_table_setup
 
 let checked_virtual_alignment alignment =
   let alignment =
@@ -170,26 +173,24 @@ let checked_mapping_alignment level =
 
 let symbolic_va_alignments ir =
   let virtual_names = symbolic_names ir in
-  let alignment_requests =
-    List.concat_map
-      (function
-        | Page_table_ast.AlignedVirtual {alignment; names} ->
-            let alignment = checked_virtual_alignment alignment in
-            List.iter
-              (fun name ->
-                 if not (List.mem name virtual_names) then
-                   eval_error Page_table_setup "page_table: undeclared VA: %s"
-                     name
-               )
-              names;
-            List.map (fun name -> (name, alignment)) names
-        | Page_table_ast.Mapping {va_name; level = Some level; _}
-         |Page_table_ast.MaybeMapping {va_name; level = Some level; _} ->
-            [(va_name, checked_mapping_alignment level)]
-        | _ -> []
-        )
-      ir.Ir.page_table_setup
+  let rec collect = function
+    | [] -> []
+    | Page_table_ast.AlignedVirtual {alignment; names} :: stmts ->
+        let alignment = checked_virtual_alignment alignment in
+        List.iter
+          (fun name ->
+             if not (List.mem name virtual_names) then
+               eval_error Page_table_setup "page_table: undeclared VA: %s" name
+           )
+          names;
+        List.map (fun name -> (name, alignment)) names @ collect stmts
+    | Page_table_ast.Mapping {va_name; level = Some level; _} :: stmts
+     |Page_table_ast.MaybeMapping {va_name; level = Some level; _} :: stmts ->
+        (va_name, checked_mapping_alignment level) :: collect stmts
+    | Page_table_ast.TableBlock {body; _} :: stmts -> collect body @ collect stmts
+    | _ :: stmts -> collect stmts
   in
+  let alignment_requests = collect ir.Ir.page_table_setup in
   let alignment_for name =
     List.fold_left
       (fun best (aligned_name, alignment) ->
@@ -236,17 +237,27 @@ let fixed_code_pages stmts =
     | Page_table_ast.IdentityMapping {addr; attr = Page_table_ast.Code} :: stmts
       ->
         to_int addr :: collect stmts
+    | Page_table_ast.TableBlock {body; _} :: stmts -> collect body @ collect stmts
     | _ :: stmts -> collect stmts
   in
   collect stmts |> List.sort_uniq Int.compare
 
 let fixed_table_pages stmts =
-  List.filter_map mapping_table_addr stmts
-  |> List.map (fun addr ->
+  let to_int addr =
     try Z.to_int addr
     with Z.Overflow ->
       eval_error Page_table_setup "page_table: table address is out of range"
-  )
+  in
+  let rec collect = function
+    | [] -> []
+    | Page_table_ast.TableBlock {base; body; _} :: stmts ->
+        to_int base :: (collect body @ collect stmts)
+    | stmt :: stmts ->
+        Option.map to_int (mapping_table_addr stmt)
+        |> Option.to_list
+        |> fun pages -> pages @ collect stmts
+  in
+  collect stmts |> List.sort_uniq Int.compare
 
 let required_code_pages ir =
   List.length ir.Ir.threads
@@ -476,7 +487,11 @@ let build_lookup_addr asm_result page_table =
   let page_table_symbols =
     match page_table with
     | None -> []
-    | Some layout -> layout.Page_table_builder.symbols_pa
+    | Some layout ->
+        ("page_table_base", layout.Page_table_builder.root)
+        :: (layout.Page_table_builder.table_symbols_pa
+          @ layout.Page_table_builder.data_symbols_pa
+           )
   in
   let symbols_addr = asm_result.Assembler.symbols @ page_table_symbols in
   fun name ->
@@ -564,7 +579,7 @@ let build_page_table_memory ~default_mem_size ~symbol_sizes page_table =
          in
          data_memory_block ~step:mem_size ~symbol:sym pa value
        )
-      page_table.Page_table_builder.phys_symbols_pa
+      page_table.Page_table_builder.data_symbols_pa
   in
   table_memory @ phys_memory
 
