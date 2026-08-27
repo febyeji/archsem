@@ -416,6 +416,9 @@ let rec eval_stmt builder ~symbolic_vas ~root = function
   | Page_table_ast.TableBlock {stage; name; base = _; body} ->
       let root = find_root builder ~stage ~name in
       List.iter (eval_stmt builder ~symbolic_vas ~root:(Some root)) body
+  | Page_table_ast.TableRef {stage; name} ->
+      (* All roots receive L2 mappings for all page-table arenas up front. *)
+      ignore (find_root builder ~stage ~name)
 
 (** {1 Layout construction} *)
 

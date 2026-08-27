@@ -105,13 +105,19 @@ let test_default_identity _ =
     ]
     (parse "identity 0x283000 with default;")
 
+let test_table_reference _ =
+  assert_equal
+    [Isla.Page_table_ast.TableRef {stage = Isla.Page_table_ast.S2; name = "vm"}]
+    (parse "s2table vm;")
+
 let tests =
   "Isla.Page_table"
   >::: [ "accept default_tables = true" >:: test_default_tables_true;
          "accept default_tables = false" >:: test_default_tables_false;
          "parse table descriptor fields" >:: test_table_mapping_descriptor_fields;
          "evaluate mkdesc descriptor fields" >:: test_mkdesc_descriptor_fields;
-         "parse default identity" >:: test_default_identity
+         "parse default identity" >:: test_default_identity;
+         "parse table reference" >:: test_table_reference
        ]
 
 let () = run_test_tt_main tests

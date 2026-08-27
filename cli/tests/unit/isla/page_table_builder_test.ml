@@ -168,6 +168,35 @@ let test_default_identity_uses_page_table_arena _ =
   assert_bool "default identity page is tracked as page-table storage"
     (List.mem 0x283000 layout.table_pages)
 
+let test_table_reference_is_validated_but_needs_no_mapping _ =
+  let layout =
+    make_layout ~reserved:[0x280000; 0x281000]
+      [ Isla.Page_table_ast.OptionDefaultTables false;
+        table_block Isla.Page_table_ast.S1 "destination" 0x280000
+          [ Isla.Page_table_ast.TableRef
+              {stage = Isla.Page_table_ast.S2; name = "source"}
+          ];
+        table_block Isla.Page_table_ast.S2 "source" 0x281000 []
+      ]
+  in
+  assert_equal None layout.default_root;
+  assert_bool "both roots share the prebuilt page-table arena mapping"
+    (List.length layout.table_entries > 0)
+
+let test_unknown_table_reference_is_rejected _ =
+  assert_raises
+    (Isla.Page_table_builder.Error "page_table: unknown table root: missing")
+    (fun () ->
+       ignore
+         (make_layout ~reserved:[0x280000]
+            [ table_block Isla.Page_table_ast.S1 "destination" 0x280000
+                [ Isla.Page_table_ast.TableRef
+                    {stage = Isla.Page_table_ast.S2; name = "missing"}
+                ]
+            ]
+         )
+  )
+
 let tests =
   "Isla.Page_table_builder"
   >::: [ "materialize physical declaration"
@@ -187,7 +216,11 @@ let tests =
          "default_tables false rejects top-level mapping"
          >:: test_default_tables_false_rejects_top_level_mapping;
          "default identity uses page-table arena"
-         >:: test_default_identity_uses_page_table_arena
+         >:: test_default_identity_uses_page_table_arena;
+         "table reference is validated but needs no mapping"
+         >:: test_table_reference_is_validated_but_needs_no_mapping;
+         "unknown table reference is rejected"
+         >:: test_unknown_table_reference_is_rejected
        ]
 
 let () = run_test_tt_main tests

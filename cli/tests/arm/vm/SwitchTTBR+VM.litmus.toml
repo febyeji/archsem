@@ -11,6 +11,7 @@ physical pa0 pa1;
 s1table table0 0x2C0000 {
   identity 0x1000 with code;
   x |-> pa0;
+  s1table table1;
 }
 
 s1table table1 0x300000 {
