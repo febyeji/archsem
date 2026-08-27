@@ -46,6 +46,10 @@ let parse input =
   let lexbuf = Lexing.from_string input in
   Isla.Parser.page_table_setup Isla.Lexer.token lexbuf
 
+let parse_binding input =
+  let lexbuf = Lexing.from_string input in
+  Isla.Parser.binding Isla.Lexer.token lexbuf
+
 let test_default_tables_true _ =
   assert_equal
     [Isla.Page_table_ast.OptionDefaultTables true]
@@ -56,10 +60,50 @@ let test_default_tables_false _ =
     [Isla.Page_table_ast.OptionDefaultTables false]
     (parse "option default_tables = false;")
 
+let test_table_mapping_descriptor_fields _ =
+  let expected =
+    [ Isla.Page_table_ast.Mapping
+        { va_name = "x";
+          target = Isla.Page_table_ast.Table (Z.of_int 0x283000);
+          attrs = [Isla.Page_table_ast.{name = "APTable"; value = Z.of_int 2}];
+          level = Some 2
+        }
+    ]
+  in
+  assert_equal expected
+    (parse "x |-> table(0x283000) with [APTable=2] at level 2;");
+  assert_equal expected
+    (parse "x |-> table(0x283000) with [APTable=2] and default at level 2;")
+
+let eval_binding input =
+  Isla.Term.eval
+    ~lookup_addr:(fun name -> failwith ("unexpected symbol: " ^ name))
+    (parse_binding input)
+
+let test_mkdesc_descriptor_fields _ =
+  let table_expected =
+    Isla.Page_table_desc.table_descriptor 0x283000
+    |> fun desc ->
+    Isla.Page_table_desc.apply_descriptor_fields desc
+      [Isla.Page_table_ast.{name = "APTable"; value = Z.of_int 2}]
+    |> Z.of_int64
+  in
+  assert_equal table_expected (eval_binding "mkdesc2(table=0x283000, APTable=2)");
+  let leaf_expected =
+    Isla.Page_table_desc.make_descriptor ~level:3 ~oa:0x400000
+      ~kind:Isla.Page_table_ast.Data
+      ~fields:[Isla.Page_table_ast.{name = "nG"; value = Z.one}]
+      ()
+    |> Z.of_int64
+  in
+  assert_equal leaf_expected (eval_binding "mkdesc3(oa=0x400000, nG=1)")
+
 let tests =
   "Isla.Page_table"
   >::: [ "accept default_tables = true" >:: test_default_tables_true;
-         "accept default_tables = false" >:: test_default_tables_false
+         "accept default_tables = false" >:: test_default_tables_false;
+         "parse table descriptor fields" >:: test_table_mapping_descriptor_fields;
+         "evaluate mkdesc descriptor fields" >:: test_mkdesc_descriptor_fields
        ]
 
 let () = run_test_tt_main tests
