@@ -52,6 +52,11 @@ val big_size : int
     addresses. Each reserved address blocks the page containing it. *)
 val make : base:int -> ?limit:int -> ?reserved:int list -> unit -> t
 
+(** Prevent subsequent allocations from using [addr]'s page. This must be
+    called before the first allocation when reserving an address above the
+    allocator's current position. *)
+val reserve_page : t -> int -> unit
+
 (** Allocate [size] bytes at an address aligned to [alignment]. *)
 val alloc_aligned : t -> size:int -> alignment:int -> int
 

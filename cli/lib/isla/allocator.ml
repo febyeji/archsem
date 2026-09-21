@@ -71,6 +71,12 @@ let make ~base ?limit ?(reserved = []) () =
   );
   {current; limit}
 
+let reserve_page allocator addr =
+  let current = max allocator.current (page_after addr) in
+  match allocator.limit with
+  | Some limit when current > limit -> Error.failwith "allocator: limit exceeded"
+  | _ -> allocator.current <- current
+
 let alloc_aligned allocator ~size ~alignment =
   let addr = align_up allocator.current alignment in
   let next = addr + size in

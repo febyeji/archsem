@@ -293,6 +293,21 @@ let default_tables_enabled stmts =
     stmts
   |> Option.value ~default:true
 
+(** Reserve table pages named explicitly by mappings before allocating any
+    implicit root or child tables. *)
+let rec reserve_explicit_table_pages state table_allocator stmts =
+  List.iter
+    (function
+      | Page_table_ast.Mapping {target = Page_table_ast.Table addr; _}
+       |Page_table_ast.MaybeMapping {target = Page_table_ast.Table addr; _} ->
+          let addr = table_addr "table address" (Term.eval ~state addr) in
+          Allocator.reserve_page table_allocator addr
+      | Page_table_ast.TableBlock {body; _} ->
+          reserve_explicit_table_pages state table_allocator body
+      | _ -> ()
+      )
+    stmts
+
 let eval_fields builder fields =
   List.map
     (fun Page_table_ast.{name; value} ->
@@ -391,6 +406,7 @@ let to_layout builder : layout =
 let build ~arch ~symbol_allocator ~table_allocator ~table_block ~state stmts =
   check_arch arch;
   if stmts = [] then error "page_table: empty page_table_setup";
+  reserve_explicit_table_pages state table_allocator stmts;
   let default_root =
     if default_tables_enabled stmts then
       Some
