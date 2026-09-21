@@ -30,60 +30,20 @@
 (******************************************************************************)
 
 open OUnit2
-module Ast = Isla.Page_table_ast
 
-let mapping target = Ast.Mapping {va_name = "x"; target; attrs = []; level = None}
+let parse input =
+  Isla.Parser.page_table_setup Isla.Lexer.token (Lexing.from_string input)
 
-let table_mapping addr =
-  Ast.Mapping
-    { va_name = "x";
-      target = Ast.Table (Isla.Term.Const (Z.of_int addr));
-      attrs = [];
-      level = Some 2
-    }
-
-let table_block name base body =
-  Ast.TableBlock {stage = Ast.S1; name; base = Z.of_int base; body}
-
-let test_explicit_table_pages_are_reserved _ =
-  let state = Isla.Eval_state.create () in
-  Isla.Eval_state.add_virtual state "x" 0x400000;
-  let symbol_allocator = Isla.Allocator.make ~base:0x400000 () in
-  let table_allocator =
-    Isla.Allocator.make ~base:0x200000 ~limit:0x400000
-      ~reserved:[0x280000; 0x2c0000] ()
-  in
-  let stmts =
-    [ Ast.Physical ["pa1"];
-      table_block "old_l3" 0x280000
-        [table_mapping 0x283000; mapping (Ast.PaName "pa1")];
-      table_block "new_l3" 0x2c0000
-        [table_mapping 0x2c3000; mapping (Ast.PaName "pa1")]
+let test_default_identity _ =
+  assert_equal
+    [ Isla.Page_table_ast.IdentityMapping
+        { addr = Isla.Term.Const (Z.of_int 0x283000);
+          attr = Isla.Page_table_ast.Default
+        }
     ]
-  in
-  ignore
-    (Isla.Page_table_builder.build ~arch:Litmus.Arch_id.Arm ~symbol_allocator
-       ~table_allocator ~table_block:0x200000 ~state stmts
-    )
-
-let test_default_identity_uses_table_arena_mapping _ =
-  let state = Isla.Eval_state.create () in
-  let symbol_allocator = Isla.Allocator.make ~base:0x400000 () in
-  let table_allocator = Isla.Allocator.make ~base:0x200000 ~limit:0x400000 () in
-  ignore
-    (Isla.Page_table_builder.build ~arch:Litmus.Arch_id.Arm ~symbol_allocator
-       ~table_allocator ~table_block:0x200000 ~state
-       [ Ast.IdentityMapping
-           {addr = Isla.Term.Const (Z.of_int 0x283000); attr = Ast.Default}
-       ]
-    )
+    (parse "identity 0x283000 with default;")
 
 let tests =
-  "Isla.Page_table_builder"
-  >::: [ "explicit table pages are reserved"
-         >:: test_explicit_table_pages_are_reserved;
-         "default identity uses table arena mapping"
-         >:: test_default_identity_uses_table_arena_mapping
-       ]
+  "Isla.Page_table" >::: ["parse default identity" >:: test_default_identity]
 
 let () = run_test_tt_main tests
