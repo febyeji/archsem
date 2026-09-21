@@ -78,12 +78,37 @@ let test_default_identity_uses_table_arena_mapping _ =
        ]
     )
 
+let test_invalid_mapping_accepts_ng _ =
+  let state = Isla.Eval_state.create () in
+  Isla.Eval_state.add_virtual state "x" 0x400000;
+  let symbol_allocator = Isla.Allocator.make ~base:0x400000 () in
+  let table_allocator = Isla.Allocator.make ~base:0x200000 ~limit:0x400000 () in
+  ignore
+    (Isla.Page_table_builder.build ~arch:Litmus.Arch_id.Arm ~symbol_allocator
+       ~table_allocator ~table_block:0x200000 ~state
+       [ Ast.Mapping
+           { va_name = "x";
+             target = Ast.Invalid;
+             attrs = [{name = "nG"; value = Isla.Term.Const Z.one}];
+             level = None
+           }
+       ]
+    );
+  let pte_addr =
+    Isla.Term.eval ~state
+      (Isla.Term.Fn ("pte3", [Isla.Term.Sym "x"; Isla.Term.Sym "page_table_base"]))
+    |> Z.to_int
+  in
+  let entries = Option.get state.page_table in
+  assert_equal (Some 0x800L) (Hashtbl.find_opt entries pte_addr)
+
 let tests =
   "Isla.Page_table_builder"
   >::: [ "explicit table pages are reserved"
          >:: test_explicit_table_pages_are_reserved;
          "default identity uses table arena mapping"
-         >:: test_default_identity_uses_table_arena_mapping
+         >:: test_default_identity_uses_table_arena_mapping;
+         "invalid mapping accepts nG" >:: test_invalid_mapping_accepts_ng
        ]
 
 let () = run_test_tt_main tests

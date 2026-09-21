@@ -43,7 +43,17 @@ let test_default_identity _ =
     ]
     (parse "identity 0x283000 with default;")
 
+let eval_binding input =
+  let term = Isla.Parser.binding Isla.Lexer.token (Lexing.from_string input) in
+  Isla.Term.eval ~state:(Isla.Eval_state.create ()) term
+
+let test_ng_descriptor_field _ =
+  assert_equal (Z.of_int 0x400c43) (eval_binding "mkdesc3(oa=0x400000, nG=1)")
+
 let tests =
-  "Isla.Page_table" >::: ["parse default identity" >:: test_default_identity]
+  "Isla.Page_table"
+  >::: [ "parse default identity" >:: test_default_identity;
+         "evaluate nG descriptor field" >:: test_ng_descriptor_field
+       ]
 
 let () = run_test_tt_main tests
