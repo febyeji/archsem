@@ -7,7 +7,7 @@ fuel = 1000
 bbm = "off"
 
 [assembler]
-command = "clang --target=aarch64-unknown-linux-elf -march=armv8-a+lse+rcpc -fuse-ld=lld"
+command = "clang --target=aarch64-unknown-linux-elf -march=armv8.1-a+lse+rcpc -fuse-ld=lld"
 # The bytes grouping when printing .archsem.toml files
 instruction_step = 4
 

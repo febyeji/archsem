@@ -115,6 +115,12 @@ let test_assemble_assigned_addr _ =
   assert_equal ~printer:string_of_int ~msg:"handler0 size" 4
     (Bytes.length handler.data)
 
+let test_assemble_ttbr1_el2 _ =
+  let input = make_input [section "thread0" "\tMSR TTBR1_EL2, X4\n"] in
+  let result = assemble_test input in
+  let thread0 = find_section "thread0" result in
+  assert_equal ~printer:string_of_int 4 (Bytes.length thread0.data)
+
 let test_resolve_unknown_raises _ =
   let input = make_input [section "thread0" "\tNOP\n"] in
   let result = assemble_test input in
@@ -129,6 +135,7 @@ let tests =
          "multiple symbols" >:: test_assemble_multiple_symbols;
          "no symbols" >:: test_assemble_no_symbols;
          "assigned section address" >:: test_assemble_assigned_addr;
+         "TTBR1_EL2 system register" >:: test_assemble_ttbr1_el2;
          "resolve unknown raises" >:: test_resolve_unknown_raises
        ]
 
