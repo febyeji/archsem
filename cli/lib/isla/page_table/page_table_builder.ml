@@ -50,6 +50,11 @@ type descriptor = int64
 
 type data_value = Z.t
 
+type named_root =
+  { stage : Page_table_ast.table_stage;
+    base : pa
+  }
+
 type layout =
   { default_root : pa option;
     data_symbols_pa : (string, pa) Hashtbl.t;
@@ -70,7 +75,7 @@ type t =
        named table block. *)
     default_root : pa option;
     (* Named translation-table roots. *)
-    named_roots : (string, pa) Hashtbl.t;
+    named_roots : (string, named_root) Hashtbl.t;
     (* Page-table descriptors, keyed by their physical addresses. *)
     entries : (pa, descriptor) Hashtbl.t;
     (* Required alignment for each physical-address symbol. *)
@@ -295,6 +300,37 @@ let default_tables_enabled stmts =
     stmts
   |> Option.value ~default:true
 
+let duplicate_root_base builder base =
+  builder.default_root = Some base
+  || Hashtbl.fold
+       (fun _ root duplicate -> duplicate || root.base = base)
+       builder.named_roots false
+
+(** Register named roots before evaluating any table body so references may
+    point to tables declared later in the setup. *)
+let rec register_named_roots builder stmts =
+  List.iter
+    (function
+      | Page_table_ast.TableBlock {stage; name; base; body} ->
+          let base = table_addr "table base" base in
+          if Hashtbl.mem builder.named_roots name then
+            error "page_table: duplicate table root: %s" name;
+          if duplicate_root_base builder base then
+            error "page_table: duplicate table base: 0x%x" base;
+          Hashtbl.add builder.named_roots name {stage; base};
+          Eval_state.add_symbol builder.state name base;
+          register_named_roots builder body
+      | _ -> ()
+      )
+    stmts
+
+let find_named_root builder ~stage ~name =
+  match Hashtbl.find_opt builder.named_roots name with
+  | None -> error "page_table: unknown table root: %s" name
+  | Some root when root.stage <> stage ->
+      error "page_table: table root %s has a different stage" name
+  | Some root -> root.base
+
 (** Reserve table pages named explicitly by mappings before allocating any
     implicit root or child tables. *)
 let rec reserve_explicit_table_pages state table_allocator stmts =
@@ -382,20 +418,12 @@ let rec eval_stmt builder ~table_block ~root = function
       let addr = addr_of_z "address" (Term.eval ~state:builder.state addr) in
       if attr <> Page_table_ast.Default || not (is_table_addr addr) then
         add_mapping builder ~root ~va:addr ~pa:addr attr
-  | Page_table_ast.TableBlock {name; base; body; _} ->
-      let base = table_addr "table base" base in
-      if Hashtbl.mem builder.named_roots name then
-        error "page_table: duplicate table root: %s" name;
-      if
-        builder.default_root = Some base
-        || Hashtbl.fold
-             (fun _ root duplicate -> duplicate || root = base)
-             builder.named_roots false
-      then error "page_table: duplicate table base: 0x%x" base;
-      Eval_state.add_symbol builder.state name base;
-      Hashtbl.add builder.named_roots name base;
+  | Page_table_ast.TableBlock {stage; name; body; _} ->
+      let base = find_named_root builder ~stage ~name in
       initialise_root builder ~table_block base;
       List.iter (eval_stmt builder ~table_block ~root:(Some base)) body
+  | Page_table_ast.TableRef {stage; name} ->
+      ignore (find_named_root builder ~stage ~name)
 
 (** {1 Layout construction} *)
 
@@ -423,6 +451,7 @@ let build ~arch ~symbol_allocator ~table_allocator ~table_block ~state stmts =
       ~pa_alignments:(pa_alignment_requests stmts)
       ~default_root
   in
+  register_named_roots builder stmts;
   state.Eval_state.page_table <- Some builder.entries;
   Option.iter (initialise_root builder ~table_block) builder.default_root;
   ( try List.iter (eval_stmt builder ~table_block ~root:builder.default_root) stmts

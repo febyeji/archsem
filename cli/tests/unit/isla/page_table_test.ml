@@ -65,13 +65,19 @@ let test_table_mapping_descriptor_field _ =
     ]
     (parse "x |-> table(0x283000) with [APTable=2] at level 2;")
 
+let test_table_reference _ =
+  assert_equal
+    [Isla.Page_table_ast.TableRef {stage = Isla.Page_table_ast.S1; name = "other"}]
+    (parse "s1table other;")
+
 let tests =
   "Isla.Page_table"
   >::: [ "parse default identity" >:: test_default_identity;
          "evaluate nG descriptor field" >:: test_ng_descriptor_field;
          "evaluate table descriptor field" >:: test_table_descriptor_field;
          "parse table mapping descriptor field"
-         >:: test_table_mapping_descriptor_field
+         >:: test_table_mapping_descriptor_field;
+         "parse table reference" >:: test_table_reference
        ]
 
 let () = run_test_tt_main tests

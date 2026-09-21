@@ -102,13 +102,47 @@ let test_invalid_mapping_accepts_ng _ =
   let entries = Option.get state.page_table in
   assert_equal (Some 0x800L) (Hashtbl.find_opt entries pte_addr)
 
+let build_named_tables stmts =
+  let state = Isla.Eval_state.create () in
+  let symbol_allocator = Isla.Allocator.make ~base:0x400000 () in
+  let table_allocator =
+    Isla.Allocator.make ~base:0x200000 ~limit:0x400000
+      ~reserved:[0x280000; 0x300000] ()
+  in
+  Isla.Page_table_builder.build ~arch:Litmus.Arch_id.Arm ~symbol_allocator
+    ~table_allocator ~table_block:0x200000 ~state
+    (Ast.OptionDefaultTables false :: stmts)
+
+let test_forward_table_reference _ =
+  ignore
+    (build_named_tables
+       [ table_block "destination" 0x280000
+           [Ast.TableRef {stage = Ast.S1; name = "source"}];
+         table_block "source" 0x300000 []
+       ]
+    )
+
+let test_unknown_table_reference _ =
+  assert_raises
+    (Isla.Page_table_builder.Error "page_table: unknown table root: missing")
+    (fun () ->
+       ignore
+         (build_named_tables
+            [ table_block "destination" 0x280000
+                [Ast.TableRef {stage = Ast.S1; name = "missing"}]
+            ]
+         )
+  )
+
 let tests =
   "Isla.Page_table_builder"
   >::: [ "explicit table pages are reserved"
          >:: test_explicit_table_pages_are_reserved;
          "default identity uses table arena mapping"
          >:: test_default_identity_uses_table_arena_mapping;
-         "invalid mapping accepts nG" >:: test_invalid_mapping_accepts_ng
+         "invalid mapping accepts nG" >:: test_invalid_mapping_accepts_ng;
+         "forward table reference" >:: test_forward_table_reference;
+         "unknown table reference" >:: test_unknown_table_reference
        ]
 
 let () = run_test_tt_main tests
