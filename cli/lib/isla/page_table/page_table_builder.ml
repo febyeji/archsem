@@ -334,14 +334,13 @@ let eval_mapping_target ?level ?(attrs = []) builder ~root ~va = function
       let desc = Desc.apply_descriptor_fields 0L fields in
       write_descriptor ?level builder ~root ~va desc
   | Page_table_ast.Table addr ->
-      if attrs <> [] then
-        error "page_table: descriptor fields are only supported on PA mappings";
       let level = check_table_level level in
       let table_pa =
         table_addr "table address" (Term.eval ~state:builder.state addr)
       in
+      let fields = eval_fields builder attrs in
       let desc =
-        try Desc.table_descriptor table_pa
+        try Desc.table_descriptor ~fields table_pa
         with Failure msg -> error "page_table: %s" msg
       in
       write_descriptor ~level builder ~root ~va desc

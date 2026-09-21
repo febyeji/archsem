@@ -50,10 +50,28 @@ let eval_binding input =
 let test_ng_descriptor_field _ =
   assert_equal (Z.of_int 0x400c43) (eval_binding "mkdesc3(oa=0x400000, nG=1)")
 
+let test_table_descriptor_field _ =
+  let expected = Z.of_string "0x4000000000283003" in
+  assert_equal expected (eval_binding "mkdesc2(table=0x283000, APTable=2)")
+
+let test_table_mapping_descriptor_field _ =
+  assert_equal
+    [ Isla.Page_table_ast.Mapping
+        { va_name = "x";
+          target = Isla.Page_table_ast.Table (Isla.Term.Const (Z.of_int 0x283000));
+          attrs = [{name = "APTable"; value = Isla.Term.Const (Z.of_int 2)}];
+          level = Some 2
+        }
+    ]
+    (parse "x |-> table(0x283000) with [APTable=2] at level 2;")
+
 let tests =
   "Isla.Page_table"
   >::: [ "parse default identity" >:: test_default_identity;
-         "evaluate nG descriptor field" >:: test_ng_descriptor_field
+         "evaluate nG descriptor field" >:: test_ng_descriptor_field;
+         "evaluate table descriptor field" >:: test_table_descriptor_field;
+         "parse table mapping descriptor field"
+         >:: test_table_mapping_descriptor_field
        ]
 
 let () = run_test_tt_main tests
