@@ -213,6 +213,21 @@ let parse_kind toml : Testrepr.kind =
   in
   Toml.find_or ~default:Testrepr.Exists toml parse_kind_string ["final"; "kind"]
 
+(** Fixed UM aliases are direct page mappings. The extracted model validates
+    alignment, bounds and unique sources, before initializing execution. *)
+let parse_um_alias toml =
+  let entry table =
+    let fields = Toml.get_table_values Fun.id table |> List.map fst in
+    List.iter
+      (fun key ->
+         if key <> "source" && key <> "backing" then
+           Toml.error "Unknown um_alias field: %s" key
+       )
+      fields;
+    (Toml.find table Toml.get_Z ["source"], Toml.find table Toml.get_Z ["backing"])
+  in
+  Toml.find_or ~default:[] toml (Toml.get_array entry) ["um_alias"]
+
 (** {1 Top-level parser} *)
 
 let parse_to_testrepr (toml : Toml.t) : Testrepr.t =
@@ -221,6 +236,7 @@ let parse_to_testrepr (toml : Toml.t) : Testrepr.t =
     name = Toml.find toml Toml.get_string ["name"];
     threads = Toml.find toml parse_threads ["thread"];
     memory;
+    um_alias = parse_um_alias toml;
     final = parse_final ~syms:(Testrepr.mem_syms memory) toml;
     kind = parse_kind toml
   }

@@ -59,8 +59,27 @@ module Make (Arch : Archsem.Arch) = struct
       (fun (thread : Testrepr.thread) -> regmap_of_gen_list thread.regs)
       threads
 
-  let memory_of_testrepr memory =
-    List.fold_left insert_memory_block MemMap.empty memory
+  let memory_of_testrepr ~fixed_um memory =
+    (* A memoryMap has already forgotten duplicate VA initializers. Check them
+       here before insertion; the model checks conflicts between aliases. *)
+    let insert mm (block : Testrepr.memory_block) =
+      if fixed_um then (
+        let first = Z.of_int block.addr in
+        let last = Z.add first (Z.of_int (Bytes.length block.data)) in
+        if Z.sign first < 0 || Z.compare last (Z.shift_left Z.one 56) > 0 then
+          failwith "Fixed UM mapping: initial memory outside 56-bit address space";
+        Bytes.iteri
+          (fun i byte ->
+             match MemMap.lookupi_opt (block.addr + i) 1 mm with
+             | Some old when old <> Char.code byte ->
+                 failwith "Fixed UM mapping: conflicting initial bytes"
+             | _ -> ()
+           )
+          block.data
+      );
+      insert_memory_block mm block
+    in
+    List.fold_left insert MemMap.empty memory
 
   let term_conds_of_threads (threads : Testrepr.thread list) =
     threads
@@ -72,12 +91,18 @@ module Make (Arch : Archsem.Arch) = struct
     let lookup_addr = Testrepr.lookup_addr test in
     try
       let regs = regmaps_of_threads test.threads in
-      let mem = memory_of_testrepr test.memory in
+      let mem = memory_of_testrepr ~fixed_um:(test.um_alias <> []) test.memory in
       let init = ArchState.make regs mem in
       let term = term_conds_of_threads test.threads in
 
-      (* Check final cond can be evaluated on initial state *)
+      (* Check register names and thread indices now. With fixed aliases,
+         memory observations are checked on every projected final state by
+         Runner: a VA need not have its own initializer to name backing bytes. *)
       let locs = Assertion.get_unique_locs test.final in
+      let locs =
+        if test.um_alias = [] then locs
+        else List.filter (function Assertion.Reg _ -> true | _ -> false) locs
+      in
       let _ = List.map (AssertionChecker.lookup_loc ~lookup_addr init) locs in
 
       (init, term)

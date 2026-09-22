@@ -525,6 +525,7 @@ let to_testrepr ~filename (ir : Ir.t) : Testrepr.t =
     name = ir.name;
     threads;
     memory;
+    um_alias = [];
     kind = ir.kind;
     final =
       Assertion.map_cst

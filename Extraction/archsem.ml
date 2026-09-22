@@ -66,6 +66,15 @@ module Arm = struct
         UMPromising.coq_UMPromising_opmodel_pf isem (Z.of_int nth)
     end)
 
+  module UMPromFixed = OpModel.Of_coq (struct
+      type config = (Z.t * Z.t) list
+
+      let default_config = []
+
+      let opmodel mapping isem ~nth =
+        UMPromising.coq_UMPromising_opmodel_fixed_pf mapping isem (Z.of_int nth)
+    end)
+
   module BBM = VMPromising.BBM
 
   module VMProm = OpModel.Of_coq (struct

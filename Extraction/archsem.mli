@@ -53,6 +53,9 @@ module Arm : sig
   (** The user-mode promising model, with the promise-first optimisation *)
   module UMProm : OpModel.S with type config = unit
 
+  (** Fixed 4 KiB page aliases as [(source, backing)] pairs. *)
+  module UMPromFixed : OpModel.S with type config = (Z.t * Z.t) list
+
   module BBM : sig
     type param =
       | Off

@@ -50,6 +50,63 @@ Require Import ArmInst.
     with mixed-size support on top of the new interface *)
 
 
+(** Direct 4 KiB page aliases; unlisted pages keep their address. *)
+Section Aliases.
+  Context (aliases : list (Z * Z)).
+
+  Definition alias_address (a : address) : address :=
+    let z := bv_unsigned a in
+    let offset := z mod 4096 in
+    match find (λ entry : Z * Z, entry.1 =? z - offset) aliases with
+    | Some (_, backing) => Z_to_bv addr_size (backing + offset)
+    | None => a
+    end.
+
+  (** A memory message must remain contiguous after translation. *)
+  Definition alias_range (a : address) (size : N) : result string address :=
+    if aliases is [] then Ok a else
+      let backing := alias_address a in
+      let limit := 2 ^ Z.of_N addr_size in
+      if decide (bv_unsigned a + Z.of_N size ≤ limit ∧
+                 bv_unsigned backing + Z.of_N size ≤ limit ∧
+                 map alias_address (addr_range a size) = addr_range backing size)
+      then Ok backing
+      else Error "Fixed UM mapping: non-contiguous or wrapping access".
+
+  (** Merge initial bytes at their backing addresses. *)
+  Definition alias_init (mem : memoryMap) : result string memoryMap :=
+    foldlM (λ backing '(a, byte),
+      let b := alias_address a in
+      match backing !! b with
+      | Some old =>
+          if decide (old = byte) then Ok backing
+          else Error "Fixed UM mapping: conflicting initial bytes"
+      | None => Ok (<[b := byte]> backing)
+      end) (∅ : memoryMap) (map_to_list mem).
+
+  (** Expose each backing byte at all of its architectural addresses. *)
+  Definition alias_snapshot (backing : memoryMap) : memoryMap :=
+    if aliases is [] then backing else
+      foldr (λ '(b, byte) mem,
+        let z := bv_unsigned b in
+        let offset := z mod 4096 in
+        let addrs := omap (λ '(source, target),
+          if decide (target = z - offset)
+          then Some (Z_to_bv addr_size (source + offset)) else None) aliases in
+        let addrs := if decide (alias_address b = b) then b :: addrs else addrs in
+        foldr (λ a, insert a byte) mem addrs) ∅ (map_to_list backing).
+
+  (** Request addresses must reach UM with the MMU disabled. *)
+  Definition alias_check_registers (regs : registerMap) : result string unit :=
+    if aliases is [] then Ok () else
+      match reg_lookup SCTLR_EL1 regs with
+      | Some sctlr =>
+          if decide (bv_extract 0 1 sctlr = 0%bv) then Ok ()
+          else Error "Fixed UM mapping requires SCTLR_EL1.M = 0"
+      | None => Error "Fixed UM mapping requires SCTLR_EL1"
+      end.
+End Aliases.
+
 (** A message in the promising model memory.  [size] is a field (not a
     parameter) so that [Msg.t] is a plain [Set] and all messages
     can live in one list. *)
@@ -180,8 +237,9 @@ Module FwdItem.
     end.
 End FwdItem.
 
-(** Data of a load-exclusive: [time] is its external read time and [view] is
-    its [vpost]. *)
+(** Data of a load-exclusive: [time] is its external read time, [view] is its
+    [vpost], and [addr] is the architectural request address before mapping.
+    Interference is checked separately on the backing write footprint. *)
 Module XclItem.
   Record t :=
     make {
@@ -393,7 +451,7 @@ Definition read_fwd (fwdb : gmap address FwdItem.t) (macc : mem_acc) (mem : Memo
     - Update all the views that should be updated
     - If exclusive, set the exclusive database
     - If atomic RMW, remember this read for the matching write *)
-Definition read_mem (addr : address) (size : N) (macc : mem_acc) (init : memoryMap) :
+Definition read_mem_at (va addr : address) (size : N) (macc : mem_acc) (init : memoryMap) :
     Exec.t (PPState.t TState.t Msg.t IIS.t) string (bv (8 * size)) :=
   ts ← mget PPState.state;
   vaddr ← mget (IIS.strict ∘ PPState.iis);
@@ -432,7 +490,7 @@ Definition read_mem (addr : address) (size : N) (macc : mem_acc) (init : memoryM
   mset PPState.state $ TState.update TState.vacq (view_if (is_rel_acq macc) vpost);;
   mset PPState.state $ TState.update TState.vcap vaddr;;
   ( if is_exclusive macc
-    then mset PPState.state $ TState.set_xclb tread addr size vpost
+    then mset PPState.state $ TState.set_xclb tread va size vpost
     else mret ());;
   mset PPState.iis $ IIS.add vpost;;
   mret res.
@@ -446,7 +504,7 @@ Definition read_mem (addr : address) (size : N) (macc : mem_acc) (init : memoryM
     - Update all the views that should be updated
     - Set the forwarding database
     - If a new promise was added, return its minimum view, otherwise [None] *)
-Definition write_mem (tid : nat) (addr : address) (size : N) (macc : mem_acc)
+Definition write_mem_at (tid : nat) (va addr : address) (size : N) (macc : mem_acc)
     (data : bv (8 * size)) :
     Exec.t (PPState.t TState.t Msg.t IIS.t) string (option view) :=
   let msg := Msg.make size tid addr data in
@@ -488,7 +546,7 @@ Definition write_mem (tid : nat) (addr : address) (size : N) (macc : mem_acc)
       | None => mdiscard
       | Some xcl =>
         mset PPState.state $ TState.clear_xclb;;
-        if decide (addr = xcl.(XclItem.addr) ∧ size = xcl.(XclItem.size)) then
+        if decide (va = xcl.(XclItem.addr) ∧ size = xcl.(XclItem.size)) then
           guard_discard' (Memory.exclusive tid addr size xcl.(XclItem.time) time mem);;
           mret (Some xcl.(XclItem.view))
         else
@@ -501,13 +559,17 @@ Definition write_mem (tid : nat) (addr : address) (size : N) (macc : mem_acc)
 
 
 
+(** Existing helpers use the same address for memory and exclusive matching. *)
+Definition read_mem addr := read_mem_at addr addr.
+Definition write_mem tid addr := write_mem_at tid addr addr.
+
 (** Runs an outcome in the promising model while doing the correct view tracking
     and computation. This can mutate memory because it will append a write at
     the end of memory the corresponding event was not already promised. *)
 Section RunOutcome.
-  Context (tid : nat) (initmem : memoryMap).
+  Context (mapping : list (Z * Z)) (tid : nat) (initmem : memoryMap).
 
-  Equations run_outcome (out : outcome) :
+  Equations run_outcome_mapped (out : outcome) :
       Exec.t (PPState.t TState.t Msg.t IIS.t) string (eff_ret out * option view) :=
   | RegWrite reg racc val =>
       guard_or "Non trivial reg access types unsupported" (racc = None);;
@@ -523,6 +585,7 @@ Section RunOutcome.
       ts ← mget PPState.state;
       nts ← othrow "Register isn't mapped, can't write" $
         TState.set_reg reg (val, vreg') ts;
+      mlift (alias_check_registers mapping (TState.reg_map nts));;
       msetv PPState.state nts;;
       mret ((), None)
   | RegRead reg racc =>
@@ -534,13 +597,14 @@ Section RunOutcome.
     mret (val, None)
   | MemRead (MemReq.make macc addr addr_space size 0) =>
       guard_or "Access outside Non-Secure" (addr_space = PAS_NonSecure);;
+      backing ← mlift $ alias_range mapping addr size;
       if is_ifetch macc then
         size_4 ← guard_or "Ifetch read of size other than 4" (size = 4)%N;
         mem ← mget PPState.mem;
-        opcode ← mlift $ read_imem addr initmem mem;
+        opcode ← mlift $ read_imem backing initmem mem;
         mret (Ok (ctrans _ opcode, 0%bv), None)
       else if is_explicit macc then
-        val ← read_mem addr size macc initmem;
+        val ← read_mem_at addr backing size macc initmem;
         mret (Ok (val, 0%bv), None)
       else mthrow "Read is not explicit nor ifetch"
   | MemRead _ => mthrow "Memory read with tags unsupported"
@@ -553,7 +617,8 @@ Section RunOutcome.
   | MemWrite (MemReq.make macc addr addr_space size 0) val tags =>
       guard_or "Access outside Non-Secure" (addr_space = PAS_NonSecure);;
       guard_or "Only explicit writes are supported" (is_explicit macc);;
-      vpre_opt ← write_mem tid addr size macc val;
+      backing ← mlift $ alias_range mapping addr size;
+      vpre_opt ← write_mem_at tid addr backing size macc val;
       mret (Ok (), vpre_opt)
   | MemWrite _ _ _ => mthrow "Memory write with tags unsupported"
   | Barrier (Barrier_DMB dmb) => (* dmb *)
@@ -594,20 +659,24 @@ Section RunOutcome.
   | _ => mthrow "Unsupported outcome".
   Solve Obligations with lia.
 
-  Definition run_outcome' (out : outcome) :
-      Exec.t (PPState.t TState.t Msg.t IIS.t) string (eff_ret out) :=
-    run_outcome out |$> fst.
-
 End RunOutcome.
+
+Definition run_outcome := run_outcome_mapped [].
+Definition run_outcome' tid initmem (out : outcome) :
+    Exec.t (PPState.t TState.t Msg.t IIS.t) string (eff_ret out) :=
+  run_outcome tid initmem out |$> fst.
 
 
 (** * Implement GenPromising ***)
 
 Import Promising.
 
-Definition UMPromising : Promising.Model :=
+(** Initial memory and messages use backing addresses. *)
+Definition UMPromising_mapped (mapping : list (Z * Z)) : Promising.Model :=
   {|tState := TState.t;
-    tState_init := λ tid mem regs, mret (TState.init mem regs);
+    tState_init := λ tid mem regs,
+      alias_check_registers mapping regs;;
+      mret (TState.init mem regs);
     tState_regs := TState.reg_map;
     tState_pc := TState.pc;
     tState_pc_spec := TState.pc_reg_map;
@@ -618,14 +687,16 @@ Definition UMPromising : Promising.Model :=
     mEvent := Msg.t;
     mEvent_tid := Msg.tid;
     filter_promises := λ _ _ _ promises, promises;
-    handle_outcome := λ _ tid initmem, run_outcome tid initmem;
+    handle_outcome := λ _ tid initmem, run_outcome_mapped mapping tid initmem;
     emit_promise := λ tid initmem mem msg ts,
       mret $
         if bool_decide (Msg.tid msg = tid) then TState.promise (length mem) ts
         else ts;
     check_valid_end := λ _ _ _ _, [];
-    memory_snapshot := Memory.to_memMap;
+    memory_snapshot := λ init mem, alias_snapshot mapping (Memory.to_memMap init mem);
   |}.
+
+Definition UMPromising := UMPromising_mapped [].
 
 Definition UMPromising_nocert :=
   Promising_to_Modelnc UMPromising.
@@ -639,3 +710,26 @@ Definition UMPromising_opmodel (isem : iMon ()) (n : nat) : opModel n :=
 
 Definition UMPromising_opmodel_pf (isem : iMon ()) (n : nat) : opModel n :=
   CPState.opmodel_pf isem UMPromising.
+
+(** Configure aliases and translate initial memory before running the model. *)
+Definition UMPromising_opmodel_fixed_pf (mapping : list (Z * Z))
+    (isem : iMon ()) (n : nat) : opModel n :=
+  if mapping is [] then UMPromising_opmodel_pf isem n else
+    let model : opModel n := CPState.opmodel_pf isem (UMPromising_mapped mapping) in
+    let init term (initSt : archState n) :=
+      let valid_page := λ a : Z,
+        0 ≤ a ∧ a + 4096 ≤ 2 ^ Z.of_N addr_size ∧ a mod 4096 = 0 in
+      (if decide (NoDup mapping.*1 ∧
+                  ∀ entry ∈ mapping, valid_page entry.1 ∧ valid_page entry.2)
+       then Ok ()
+       else Error "Fixed UM mapping: invalid, unaligned or duplicate source page");;
+      backing ← alias_init mapping initSt.(archState.memory);
+      model.(opModel.init) term
+        {| archState.memory := backing;
+           archState.address_space := initSt.(archState.address_space);
+           archState.regs := initSt.(archState.regs) |} in
+    opModel.Make n model.(opModel.state) init model.(opModel.step).
+
+Lemma UMPromising_opmodel_fixed_identity isem n :
+  UMPromising_opmodel_fixed_pf [] isem n = UMPromising_opmodel_pf isem n.
+Proof. reflexivity. Qed.

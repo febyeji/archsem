@@ -146,13 +146,31 @@ let final_to_toml (test : Testrepr.t) =
 (** {1 Public API} *)
 
 let to_toml (test : Testrepr.t) : Toml.t =
+  let open Toml in
   TomlTable
-    [ ("arch", TomlString test.arch);
-      ("name", TomlString test.name);
-      ("thread", threads_to_toml test.threads);
-      ("memory", TomlTableArray (List.map memory_block_to_toml test.memory));
-      ("final", final_to_toml test)
-    ]
+    ([ ("arch", TomlString test.arch);
+       ("name", TomlString test.name);
+       ("thread", threads_to_toml test.threads);
+       ("memory", TomlTableArray (List.map memory_block_to_toml test.memory));
+       ("final", final_to_toml test)
+     ]
+    @
+    if test.um_alias = [] then []
+    else
+      [ ( "um_alias",
+          TomlTableArray
+            (List.map
+               (fun (source, backing) ->
+                  TomlTable
+                    [ ("source", TomlInteger source);
+                      ("backing", TomlInteger backing)
+                    ]
+                )
+               test.um_alias
+            )
+        )
+      ]
+    )
 
 let to_string test = Toml.Printer.to_string ~force_table_arrays:true (to_toml test)
 

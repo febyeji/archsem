@@ -53,7 +53,7 @@ module X86Runner = Runner.Make (X86)
 
 (* Drivers for each operational model *)
 module ArmSeq = Driver.Make (Arm) (Arm.Seq)
-module ArmUmp = Driver.Make (Arm) (Arm.UMProm)
+module ArmUmp = Driver.Make (Arm) (Arm.UMPromFixed)
 module ArmVmp = Driver.Make (Arm) (Arm.VMProm)
 module X86Seq = Driver.Make (X86) (X86.Seq)
 module X86Tso = Driver.Make (X86) (X86.Tso)
@@ -98,6 +98,8 @@ let parse_testfile (fmt : format option) (filename : string) : Testrepr.t =
       match fmt with
       | Archsem -> Parser.parse_to_testrepr toml
       | Isla ->
+          if Parser.parse_um_alias toml <> [] then
+            Toml.error "um_alias requires native .archsem.toml input";
           toml |> Isla.Ir.of_toml |> Isla.Normalize.apply
           |> Isla.Converter.to_testrepr ~filename
     in
@@ -246,7 +248,12 @@ let cmd_ump =
     let parse = parse_testfile fmt in
     assert (Config.get_arch () = Arch_id.Arm);
     run_tests "ump"
-      (ArmRunner.run_test_file ~parse (ArmUmp.model Arm.tiny_isa))
+      (fun ~short filename ->
+         let test = parse filename in
+         ArmRunner.run_testrepr ~fixed_um:true ~short
+           (ArmUmp.model ~config:test.um_alias Arm.tiny_isa)
+           test
+       )
       files
   in
   let info =

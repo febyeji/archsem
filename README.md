@@ -96,6 +96,27 @@ supported , but we do hope to support
 We do not currently have a candidate execution generator so all our axiomatic
 model are non-executable at the moment. They can still be used for proofs.
 
+### Fixed aliases in the Arm user-mode model
+
+Native `.archsem.toml` tests can configure `ump` with fixed 4 KiB page aliases:
+
+```toml
+[[um_alias]]
+source = 0x2000
+backing = 0x1000
+```
+
+Addresses `0x1100` and `0x2100` then share memory while retaining distinct
+register values. Mappings are applied once; unlisted pages keep their address.
+Initial memory and final assertions use the original addresses. Initial values
+for shared bytes must agree. Page bases must be aligned and within the 56-bit
+address space, with each source listed once. Accesses must remain contiguous
+and non-wrapping after translation. The MMU must stay disabled (`SCTLR_EL1.M = 0`).
+
+Run with `archsem ump test.archsem.toml`; `archsem convert` preserves aliases.
+Other models and Isla input reject `um_alias`. OCaml callers can configure
+`Arm.UMPromFixed` with a `(Z.t * Z.t) list`; an empty list gives the usual UM model.
+
 ## Rocq automation
 
 There are some powerful custom tactics in `Common`, as well as useful but

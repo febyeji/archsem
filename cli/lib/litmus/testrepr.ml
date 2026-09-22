@@ -115,6 +115,7 @@ type t =
     name : string;
     threads : thread list;
     memory : memory_block list;
+    um_alias : (Z.t * Z.t) list;
     final : Z.t Assertion.expr;
     kind : kind
   }

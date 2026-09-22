@@ -47,7 +47,11 @@ module Make (Arch : Archsem.Arch) = struct
 
   (** Run a test in a given model, print [short] or long output.
       raises [Exit] if something went wrong, after printing message on [stderr] *)
-  let run_testrepr ~short model (test : Testrepr.t) =
+  let run_testrepr ?(fixed_um = false) ~short model (test : Testrepr.t) =
+    if test.um_alias <> [] && not fixed_um then (
+      Error.model_error test.name "um_alias is supported only by ump";
+      raise Exit
+    );
     let fuel = Config.get_fuel () in
     let (init, term) = AS.testrepr_to_archstate test in
     let time_start = Sys.time () in
@@ -85,6 +89,23 @@ module Make (Arch : Archsem.Arch) = struct
     );
 
     let lookup_addr = Testrepr.lookup_addr test in
+
+    if test.um_alias <> [] then (
+      let locs = Assertion.get_unique_locs test.final in
+      try
+        List.iter
+          (fun fs ->
+             List.iter
+               (fun loc ->
+                  ignore (AssertionChecker.lookup_loc ~lookup_addr fs loc)
+                )
+               locs
+           )
+          final_states
+      with Not_found ->
+        Error.model_error test.name "Fixed UM mapping: unmapped final observation";
+        raise Exit
+    );
 
     let (observed, not_observed) =
       List.partition
