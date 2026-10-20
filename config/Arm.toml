@@ -125,6 +125,12 @@ SPSel = 0
 NZCV = 0
 DAIF = 0
 
+# Untranslated memory profile, overrides [registers.defaults]
+[profile.um.registers.defaults]
+SCTLR_EL1 = 0
+TCR_EL1 = 0
+ID_AA64MMFR1_EL1 = 0
+
 # Virtual memory profile, overrides [registers.defaults]
 [profile.vm.registers.defaults]
 # Enable EL1&0 translation
