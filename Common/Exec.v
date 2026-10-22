@@ -122,6 +122,22 @@ Definition success_state_list `(e : res (St * E) (St * A)) : list St :=
 Definition t {St E A} := St → res (St * E) (St * A).
 Arguments t : clear implicits.
 
+(** Merge successful branches with equal complete states and return values.
+    Errors, including their states, are preserved. Place this before a costly
+    continuation to avoid exploring the same continuation repeatedly. *)
+Definition dedup {St E A} `{!EqDecision St, !EqDecision A}
+    (e : t St E A) : t St E A :=
+  λ st, let r := e st in make (remove_dups r.(results)) r.(errors).
+
+Lemma dedup_results {St E A} `{!EqDecision St, !EqDecision A}
+    (e : t St E A) st x :
+  x ∈ (dedup e st).(results) ↔ x ∈ (e st).(results).
+Proof. unfold dedup. cbn. apply elem_of_remove_dups. Qed.
+
+Lemma dedup_errors {St E A} `{!EqDecision St, !EqDecision A}
+    (e : t St E A) st : (dedup e st).(errors) = (e st).(errors).
+Proof. reflexivity. Qed.
+
 (** Monadic definition based on the respective instances for execution results *)
 
 #[export] Instance mret_inst {St E} : MRet (t St E) := λ _ v st, mret (st,v).

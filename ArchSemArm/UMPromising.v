@@ -57,6 +57,14 @@ Bind Scope nat_scope with view.
 Global Hint Transparent view : core.
 Global Hint Unfold view : core.
 
+#[export] Instance reg_view_eqdep_dec :
+    EqDepDecision (λ r : reg, (reg_type r * view)%type).
+Proof.
+  intros r r' Hr [v w] [v' w'].
+  refine (dec_if_and (eqdep_decide Hr v v') (decide (w = w')));
+    abstract (subst r'; rewrite JMeq_simpl in *; naive_solver).
+Defined.
+
 Module Memory.
   Import PromMemory.
   Export (hints) PromMemory.
@@ -92,6 +100,9 @@ Module FwdItem.
 
   Definition init := make 0 0 0 None.
 
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
+
   (** The view of a read from a forwarded write. If a successful store-exclusive
       is forwarded to an acquire read, include the post-view of its paired
       load-exclusive. Plain reads should only inherit the write-data view. *)
@@ -112,6 +123,8 @@ Module XclItem.
         size : N;
         view : view
       }.
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 End XclItem.
 
 (** The thread state *)
@@ -146,6 +159,9 @@ Module TState.
         (* The latest unmatched load-exclusive. *)
         xclb : option XclItem.t;
       }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   #[global] Instance eta : Settable _ :=
     settable! make <prom;regs;coh;vrd;vwr;vdmbst;vdmb;vcap;visb;vacq;vrel;fwdb;xclb>.
@@ -262,6 +278,9 @@ Module IIS.
       strict : view;
       rmw_read : option (nat * bool);
     }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   #[global] Instance eta : Settable _ :=
     settable! make <strict;rmw_read>.
@@ -526,6 +545,7 @@ Import Promising.
 
 Definition UMPromising : Promising.Model :=
   {|tState := TState.t;
+    tState_eq_dec := TState.eq_dec;
     tState_init := λ tid mem regs, mret (TState.init mem regs);
     tState_regs := TState.reg_map;
     tState_pc := TState.pc;
@@ -533,6 +553,7 @@ Definition UMPromising : Promising.Model :=
     tState_nopromises := is_emptyb ∘ TState.prom;
     tState_min_new_prom_view := TState.min_new_prom_view;
     iis := IIS.t;
+    iis_eq_dec := IIS.eq_dec;
     iis_init := IIS.init;
     address_space := PAS_NonSecure;
     mEvent := Msg.t;

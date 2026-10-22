@@ -702,6 +702,9 @@ Module TLB.
       | Load
       | Tlbi (tid : nat).
 
+    #[global] Instance event_eq_dec : EqDecision event.
+    Proof. solve_decision. Defined.
+
     (** The list of events that happened to an entry. This should be sorted in
         decreasing order, most recent event first. The invariant should be:
         - If a TLBI then a load happen at the same timestamp, that means the
@@ -883,6 +886,9 @@ Module TLB.
             deprecated by Arm and behaves the same as ETS0 *)
         ets : N;
       }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   (** Compute the [pte_present] field from the initial memory: for each physical
       page, the list of 8-byte slots of that page (identified by their index in
@@ -1404,6 +1410,9 @@ Module WSReg.
         view : nat
       }.
 
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. intros [] []. decide_eq. Defined.
+
   Definition to_val_view_if (sr : reg) (wsreg : t) : option (reg_type sr * nat) :=
     if decide (wsreg.(sreg) = sr) is left eq
     then Some $ (ctrans eq wsreg.(val), wsreg.(view))
@@ -1417,6 +1426,9 @@ Module LEv.
   Inductive t :=
   | Cse (t : nat)
   | Wsreg (wsreg : WSReg.t).
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   Definition get_cse (lev : t) : option view :=
     match lev with
@@ -1481,6 +1493,9 @@ Module TState.
            state. [None] is when translation is disabled *)
         tlb : option TLB.t;
       }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   #[global] Instance eta : Settable _ :=
     settable! make <prom_wr; prom_tlbi;regs;levs;coh;tcoh;vrd;vwr;vdmbst;vdmb;vdsb;
@@ -1845,6 +1860,9 @@ Module IIS.
           remaining : list (bv 64)
         }.
 
+    #[global] Instance eq_dec : EqDecision t.
+    Proof. solve_decision. Defined.
+
     Definition pop (tres : t): result string (t * bv 64) :=
       if tres.(remaining) is h :: tl then mret (setv remaining tl tres, h)
       else mthrow "Couldn't pop the next PTE: error in translation assumptions".
@@ -1861,6 +1879,9 @@ Module IIS.
            instruction, so that all reads of a register agree *)
         sreg_reads : dmap reg (λ reg, reg_type reg * view)%type
       }.
+
+  #[global] Instance eq_dec : EqDecision t.
+  Proof. solve_decision. Defined.
 
   Definition init : t := make 0 None None None ∅.
 
@@ -2749,6 +2770,7 @@ Definition filter_tlbi_promises
 
 Definition VMPromising (bbm : bool) : Promising.Model :=
   {|tState := TState.t;
+    tState_eq_dec := TState.eq_dec;
     tState_init := TState.init;
     tState_regs := TState.reg_map;
     tState_pc := TState.pc;
@@ -2756,6 +2778,7 @@ Definition VMPromising (bbm : bool) : Promising.Model :=
     tState_nopromises := (λ ts, is_emptyb (TState.prom_wr ts ++ TState.prom_tlbi ts));
     tState_min_new_prom_view := TState.min_new_prom_view;
     iis := IIS.t;
+    iis_eq_dec := IIS.eq_dec;
     iis_init := IIS.init;
     address_space := PAS_NonSecure;
     mEvent := Ev.t;

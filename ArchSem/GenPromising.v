@@ -318,6 +318,10 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
         }.
     #[global] Instance eta : Settable t :=
       settable! @Make <state;mem;iis>.
+
+    #[global] Instance eq_dec
+        `{!EqDecision tState, !EqDecision mEvent, !EqDecision iis_t} : EqDecision t.
+    Proof. solve_decision. Defined.
     End PPS.
     Arguments t : clear implicits.
   End PPState.
@@ -352,6 +356,7 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
   Structure Model := {
       (** The thread state of the model *)
       tState : Type;
+      tState_eq_dec : EqDecision tState;
       (** Initialize the model thread state from architectural state *)
       tState_init : (* tid *) nat → memoryMap → registerMap →
                     result string tState;
@@ -373,6 +378,7 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
       tState_min_new_prom_view : tState → nat;
       (** Intra instruction state, reset after each instruction *)
       iis : Type;
+      iis_eq_dec : EqDecision iis;
       iis_init : iis;
       (** The type of memory event, any communication between threads must go here *)
       mEvent : Type;
@@ -608,6 +614,8 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
 
     Let mEvent_eq_dec := prom.(mEvent_eq_dec).
     Local Existing Instance mEvent_eq_dec.
+    Local Existing Instance tState_eq_dec.
+    Local Existing Instance iis_eq_dec.
 
     Section Steps.
     Context (term : terminationCondition n).
@@ -677,7 +685,9 @@ Module GenPromising (Arch : Arch) (Inter : InterfaceT Arch)
           | S fuel =>
               msetv (PPState.iis ∘ snd) prom.(iis_init);;
               let handler := run_outcome_with_promise base in
-              cinterp handler isem;;
+              (* Equal complete instruction outcomes have the same remaining
+                 fuel and continuation. Deduplicate before exploring it. *)
+              Exec.dedup (cinterp handler isem);;
               run_to_termination fuel base
           end.
 
